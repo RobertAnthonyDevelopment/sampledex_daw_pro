@@ -1,28 +1,33 @@
-# Sampledex ChordLab (Standalone macOS app)
+# Sampledex ChordLab (Current Project State)
 
-**Sampledex ChordLab** is a standalone JUCE app that turns single-note playing into full chords (as MIDI), with a built-in **Practice Mode**, **MIDI recording/export**, and a lightweight **AU/VST3 host** so you can hear chords immediately.
+Sampledex ChordLab is now a **standalone macOS JUCE DAW/workstation prototype**, not just a chord utility app.
 
-This repo now uses a deterministic macOS release script that hard-cleans stale bundles
-and produces one canonical app output path.
+It includes:
+- Multi-track arrangement/timeline
+- Mixer and channel routing
+- Piano roll + step sequencer
+- MIDI/audio recording workflows
+- AU + VST3 hosting
+- Freeze/commit/export features
+
+This repository is under active stabilization and is **not production-ready yet**.
 
 ---
 
-## Project status (as of February 13, 2026)
+## Current status (February 13, 2026)
 
-This project is currently in an **unstable, in-progress DAW state** and is **not release-ready for production sessions** yet.
+### Reality check
+- The app builds and launches.
+- A lot of DAW functionality exists and works in many sessions.
+- Reliability is still inconsistent under real plugin/device conditions.
 
-### What is working
-- The app builds successfully on macOS via `scripts/release_macos.sh` and produces a universal app binary.
-- Core DAW UI/components are present (tracks, mixer, arrangement/timeline, plugin hosting surface).
-- AU/VST3 scan flow now runs in isolated passes per format with timeout/continuation behavior.
-
-### Known blocking reliability issues
+### High-priority known problems
 - Startup buzz/noise can occur on launch on some systems.
-- Some plugins can still hard-crash the audio callback thread.
-- AU discovery/scan reliability is still inconsistent on some machines.
-- Format fallback/restore behavior still needs hardening and validation.
+- Some plugin runtime failures still crash in audio callback context.
+- AU scan/discovery is improved but still needs broader validation.
+- Project restore + cross-format fallback paths need additional hardening.
 
-### Tracked issues (handoff list)
+### Tracked blocker issues
 - [#1 Startup buzz/noise on launch](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/1)
 - [#2 Audio callback crash hardening](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/2)
 - [#3 AU scan hang/timeout handling](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/3)
@@ -34,56 +39,57 @@ This project is currently in an **unstable, in-progress DAW state** and is **not
 - [#9 Scan UX per-format diagnostics](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/9)
 - [#10 QA regression matrix for AU+VST3 reliability](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/10)
 
-If you are evaluating this project now, treat it as a development snapshot and expect instability while the above issues are being addressed.
+If you are evaluating this project, treat it as an active development snapshot.
 
 ---
 
-## What's new in v2
+## What this app currently contains
 
-### Clear tabs
-- **Play** – chord generator + voicing + virtual MIDI output (route into any DAW)
-- **Practice** – target-chord game (play the right chord to score)
-- **Record** – record what you play and/or what ChordLab outputs; export standard `.mid`
-- **Plugins** – load an AU/VST3 and route ChordLab's generated MIDI into it
-- **Settings** – light/dark mode + quick guide
+### DAW core
+- Track model + transport + timeline clip arrangement
+- Mixer with per-track controls and sends
+- Aux/master processing chain
+- Tempo map, loop, metronome, punch/count-in tools
 
-### Visible feedback
-- Bottom **Status Bar** shows:
-  - MIDI IN activity LED
-  - MIDI OUT activity LED
-  - REC indicator
-  - PLUGIN loaded indicator
+### Editing and composition
+- Piano roll editor
+- Step sequencer tab
+- Chord engine integration
+- Track/channel rack and inspector workflows
+
+### Plugin host
+- AU + VST3 host enabled in build
+- Isolated plugin scan + dead-man blacklist flow
+- Plugin probe/quarantine safety path
+- Format preference/fallback logic work in progress (see issues above)
+
+### Audio/MIDI operations
+- MIDI and audio capture paths
+- Mixdown and stems export
+- Freeze and commit-to-audio operations
+- MIDI routing/control-surface related plumbing
 
 ---
 
-## Build
+## Build (macOS)
 
-### Prereqs
-- JUCE repo cloned somewhere on disk
+### Prerequisites
+- macOS with Xcode + command line tools
 - CMake 3.22+
-- Xcode + command line tools
+- JUCE checkout available locally
 
-### Build (recommended, deterministic)
+Set `JUCE_DIR` to your JUCE repo root (or place JUCE at `~/JUCE`).
+
+### Recommended deterministic build
 ```bash
-export JUCE_DIR=~/JUCE   # or your JUCE repo root
+export JUCE_DIR=~/JUCE
 bash ./scripts/release_macos.sh
 ```
 
 Canonical app output:
 `/Users/robertclemons/Downloads/sampledex_daw-main/build/SampledexChordLab_artefacts/Release/Sampledex ChordLab.app`
 
-The script also writes:
-`build/SampledexChordLab_artefacts/Release/Sampledex ChordLab.app/Contents/Resources/BuildManifest.json`
-
-Optional bundled plugins:
-- Put AU plugins in `BundledPlugins/Components`
-- Put VST3 plugins in `BundledPlugins/VST3`
-- The release script copies them into:
-  `Sampledex ChordLab.app/Contents/PlugIns/Components` and
-  `Sampledex ChordLab.app/Contents/PlugIns/VST3`
-- Plugin scan includes both system/user plugin folders and these app-local plugin folders.
-
-### Direct CMake fallback (manual)
+### Manual CMake fallback
 ```bash
 export JUCE_DIR=~/JUCE
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -92,45 +98,51 @@ cmake --build build --config Release -j8
 
 ---
 
-## Using ChordLab
+## Important build-script behavior
 
-### 1) Route into any DAW (recommended workflow)
-1. Launch **Sampledex ChordLab**
-2. **Play tab → MIDI Routing**
-   - Select your MIDI keyboard as **Input**
-   - Enable **Virtual output** (default name: “Sampledex ChordLab”)
-3. In your DAW:
-   - Create an instrument track
-   - Set track **MIDI input** to “Sampledex ChordLab”
-   - Arm the track and play
+`scripts/release_macos.sh` is intentionally aggressive for deterministic local builds:
+- Kills running app instances
+- Deletes stale app bundles from `~/Downloads`
+- Deletes app state/cache paths under `~/Library/...`
+- Removes and rebuilds `build/`
 
-### 2) Practice mode
-Go to **Practice tab** and play notes until the target chord is detected.
-
-### 3) Record + export
-Go to **Record tab**:
-- Record **Input** (what you play) and/or **Output** (generated chords)
-- Export to `.mid` and drag it into any DAW
-
-### 4) Load a plugin (mini DAW teacher)
-Go to **Plugins tab**:
-- **Load AU/VST3...** and pick a plugin
-- Enable **Send generated chords to plugin** to drive the plugin
-- Use **Audio settings...** to choose output
+Do not run it if you need to preserve current local app state.
 
 ---
 
-## Notes
+## Plugin locations
 
-- Virtual MIDI output creation is supported on macOS (and some other desktop platforms). On platforms where it isn't available, the toggle will turn itself off.
-- AU/VST3 hosting depends on your JUCE build and OS plugin support.
+Scanner targets both system/user and app-local bundled paths.
+
+System/user defaults:
+- `/Library/Audio/Plug-Ins/VST3`
+- `~/Library/Audio/Plug-Ins/VST3`
+- `/Library/Audio/Plug-Ins/Components`
+- `~/Library/Audio/Plug-Ins/Components`
+
+Optional app-local bundle sources:
+- `BundledPlugins/VST3`
+- `BundledPlugins/Components`
+
+These are copied into app bundle on release build under:
+- `Sampledex ChordLab.app/Contents/PlugIns/VST3`
+- `Sampledex ChordLab.app/Contents/PlugIns/Components`
 
 ---
 
-## Bundle ID
-`com.sampledex.chordlab`
+## Safe mode / troubleshooting
+
+- You can start in Safe Mode at launch (Shift at startup or safe-mode CLI arg path in app startup logic).
+- If plugin instability occurs, use the issues above as the primary handoff/triage list.
 
 ---
 
-## License
-This project uses JUCE. Ensure you comply with your JUCE licensing (GPL/commercial).
+## Bundle identifier
+
+`com.Sampledex.SampledexChordLab`
+
+---
+
+## License notes
+
+This project uses JUCE. You are responsible for complying with JUCE licensing terms (GPL/commercial as applicable).
