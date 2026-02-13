@@ -171,6 +171,12 @@ namespace sampledex
 
             for (int i = 0; i < 24; ++i)
                 samplerSynth.addVoice(new juce::SamplerVoice());
+
+            for (auto& cachedLoaded : cachedInsertSlotLoaded)
+                cachedLoaded.store(false, std::memory_order_relaxed);
+            for (auto& cachedBypassed : cachedInsertSlotBypassed)
+                cachedBypassed.store(false, std::memory_order_relaxed);
+            updatePluginUiCacheLocked();
         }
 
         ~Track() override {}
@@ -758,14 +764,24 @@ namespace sampledex
         bool hasPluginInSlot(int slotIndex) const
         {
             juce::ScopedLock sl(processLock);
-            if (slotIndex == instrumentSlotIndex)
+            updatePluginUiCacheLocked();
+            return getSlotLoadedLocked(slotIndex);
+        }
+
+        bool hasPluginInSlotNonBlocking(int slotIndex) const
+        {
+            const juce::ScopedTryLock sl(processLock);
+            if (sl.isLocked())
             {
-                return instrumentSlot.instance != nullptr
-                    || builtInInstrumentMode == BuiltInInstrument::BasicSynth
-                    || (builtInInstrumentMode == BuiltInInstrument::Sampler && samplerSynth.getNumSounds() > 0);
+                updatePluginUiCacheLocked();
+                return getSlotLoadedLocked(slotIndex);
             }
-            return juce::isPositiveAndBelow(slotIndex, maxInsertSlots)
-                && pluginSlots[static_cast<size_t>(slotIndex)].instance != nullptr;
+
+            if (slotIndex == instrumentSlotIndex)
+                return cachedInstrumentSlotLoaded.load(std::memory_order_relaxed);
+            if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
+                return false;
+            return cachedInsertSlotLoaded[static_cast<size_t>(slotIndex)].load(std::memory_order_relaxed);
         }
 
         int getPluginSlotCount() const { return maxInsertSlots; }
@@ -786,22 +802,25 @@ namespace sampledex
         juce::String getPluginNameForSlot(int slotIndex) const
         {
             juce::ScopedLock sl(processLock);
-            if (slotIndex == instrumentSlotIndex)
+            updatePluginUiCacheLocked();
+            return getSlotNameLocked(slotIndex);
+        }
+
+        juce::String getPluginNameForSlotNonBlocking(int slotIndex) const
+        {
+            const juce::ScopedTryLock sl(processLock);
+            if (sl.isLocked())
             {
-                if (instrumentSlot.instance != nullptr)
-                    return instrumentSlot.description.name;
-                if (builtInInstrumentMode == BuiltInInstrument::Sampler && samplerSynth.getNumSounds() > 0)
-                    return "Built-in Sampler";
-                if (builtInInstrumentMode == BuiltInInstrument::BasicSynth)
-                    return "Built-in Synth";
-                return {};
+                updatePluginUiCacheLocked();
+                return getSlotNameLocked(slotIndex);
             }
 
+            const juce::SpinLock::ScopedLockType cacheLock(pluginUiCacheLock);
+            if (slotIndex == instrumentSlotIndex)
+                return cachedInstrumentSlotName;
             if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
                 return {};
-
-            const auto& slot = pluginSlots[static_cast<size_t>(slotIndex)];
-            return slot.instance != nullptr ? slot.description.name : juce::String{};
+            return cachedInsertSlotNames[static_cast<size_t>(slotIndex)];
         }
 
         bool getPluginDescriptionForSlot(int slotIndex, juce::PluginDescription& outDescription) const
@@ -911,11 +930,24 @@ namespace sampledex
         bool isPluginSlotBypassed(int slotIndex) const
         {
             juce::ScopedLock sl(processLock);
+            updatePluginUiCacheLocked();
+            return getSlotBypassedLocked(slotIndex);
+        }
+
+        bool isPluginSlotBypassedNonBlocking(int slotIndex) const
+        {
+            const juce::ScopedTryLock sl(processLock);
+            if (sl.isLocked())
+            {
+                updatePluginUiCacheLocked();
+                return getSlotBypassedLocked(slotIndex);
+            }
+
             if (slotIndex == instrumentSlotIndex)
-                return instrumentSlot.bypassed;
+                return cachedInstrumentSlotBypassed.load(std::memory_order_relaxed);
             if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
                 return false;
-            return pluginSlots[static_cast<size_t>(slotIndex)].bypassed;
+            return cachedInsertSlotBypassed[static_cast<size_t>(slotIndex)].load(std::memory_order_relaxed);
         }
 
         void setPluginSlotBypassed(int slotIndex, bool shouldBypass)
@@ -1756,6 +1788,64 @@ namespace sampledex
             bool bypassed = false;
         };
 
+        bool getSlotLoadedLocked(int slotIndex) const
+        {
+            if (slotIndex == instrumentSlotIndex)
+            {
+                return instrumentSlot.instance != nullptr
+                    || builtInInstrumentMode == BuiltInInstrument::BasicSynth
+                    || (builtInInstrumentMode == BuiltInInstrument::Sampler && samplerSynth.getNumSounds() > 0);
+            }
+
+            return juce::isPositiveAndBelow(slotIndex, maxInsertSlots)
+                && pluginSlots[static_cast<size_t>(slotIndex)].instance != nullptr;
+        }
+
+        juce::String getSlotNameLocked(int slotIndex) const
+        {
+            if (slotIndex == instrumentSlotIndex)
+            {
+                if (instrumentSlot.instance != nullptr)
+                    return instrumentSlot.description.name;
+                if (builtInInstrumentMode == BuiltInInstrument::Sampler && samplerSynth.getNumSounds() > 0)
+                    return "Built-in Sampler";
+                if (builtInInstrumentMode == BuiltInInstrument::BasicSynth)
+                    return "Built-in Synth";
+                return {};
+            }
+
+            if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
+                return {};
+
+            const auto& slot = pluginSlots[static_cast<size_t>(slotIndex)];
+            return slot.instance != nullptr ? slot.description.name : juce::String{};
+        }
+
+        bool getSlotBypassedLocked(int slotIndex) const
+        {
+            if (slotIndex == instrumentSlotIndex)
+                return instrumentSlot.bypassed;
+            if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
+                return false;
+            return pluginSlots[static_cast<size_t>(slotIndex)].bypassed;
+        }
+
+        void updatePluginUiCacheLocked() const
+        {
+            cachedInstrumentSlotLoaded.store(getSlotLoadedLocked(instrumentSlotIndex), std::memory_order_relaxed);
+            cachedInstrumentSlotBypassed.store(getSlotBypassedLocked(instrumentSlotIndex), std::memory_order_relaxed);
+            for (int slot = 0; slot < maxInsertSlots; ++slot)
+            {
+                cachedInsertSlotLoaded[static_cast<size_t>(slot)].store(getSlotLoadedLocked(slot), std::memory_order_relaxed);
+                cachedInsertSlotBypassed[static_cast<size_t>(slot)].store(getSlotBypassedLocked(slot), std::memory_order_relaxed);
+            }
+
+            const juce::SpinLock::ScopedLockType cacheLock(pluginUiCacheLock);
+            cachedInstrumentSlotName = getSlotNameLocked(instrumentSlotIndex);
+            for (int slot = 0; slot < maxInsertSlots; ++slot)
+                cachedInsertSlotNames[static_cast<size_t>(slot)] = getSlotNameLocked(slot);
+        }
+
         static constexpr std::uint32_t getBuiltInEffectBit(BuiltInEffect effect) noexcept
         {
             const int index = static_cast<int>(effect);
@@ -2170,11 +2260,18 @@ namespace sampledex
         juce::AudioPluginFormatManager& fmtMgr;
         
         mutable juce::CriticalSection processLock;
+        mutable juce::SpinLock pluginUiCacheLock;
         PluginSlot instrumentSlot;
         std::array<PluginSlot, static_cast<size_t>(maxInsertSlots)> pluginSlots;
         juce::AudioPlayHead* transportPlayHead = nullptr;
         BuiltInInstrument builtInInstrumentMode = BuiltInInstrument::BasicSynth;
         juce::String samplerSamplePath;
+        mutable juce::String cachedInstrumentSlotName;
+        mutable std::array<juce::String, static_cast<size_t>(maxInsertSlots)> cachedInsertSlotNames;
+        mutable std::atomic<bool> cachedInstrumentSlotLoaded { true };
+        mutable std::atomic<bool> cachedInstrumentSlotBypassed { false };
+        mutable std::array<std::atomic<bool>, static_cast<size_t>(maxInsertSlots)> cachedInsertSlotLoaded;
+        mutable std::array<std::atomic<bool>, static_cast<size_t>(maxInsertSlots)> cachedInsertSlotBypassed;
 
         std::atomic<float> volume { 0.8f };
         std::atomic<float> pan { 0.0f };

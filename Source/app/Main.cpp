@@ -7,15 +7,43 @@
 
 namespace
 {
+    static bool formatNameLooksLikeVST3(const juce::String& formatName)
+    {
+        return formatName.containsIgnoreCase("VST3");
+    }
+
+    static bool formatNameLooksLikeAudioUnit(const juce::String& formatName)
+    {
+        return formatName.containsIgnoreCase("AudioUnit")
+            || formatName.containsIgnoreCase("AU");
+    }
+
     static bool formatLooksLikeVST3(const juce::AudioPluginFormat& format)
     {
-        return format.getName().containsIgnoreCase("VST3");
+        return formatNameLooksLikeVST3(format.getName());
     }
 
     static bool formatLooksLikeAudioUnit(const juce::AudioPluginFormat& format)
     {
-        const auto name = format.getName();
-        return name.containsIgnoreCase("AudioUnit") || name.containsIgnoreCase("AU");
+        return formatNameLooksLikeAudioUnit(format.getName());
+    }
+
+    static bool formatMatchesRequested(const juce::AudioPluginFormat& format, const juce::String& requestedFormat)
+    {
+        if (requestedFormat.isEmpty())
+            return true;
+
+        const auto formatName = format.getName().trim();
+        const auto requested = requestedFormat.trim();
+        if (formatName.equalsIgnoreCase(requested))
+            return true;
+
+        if (formatNameLooksLikeAudioUnit(formatName) && formatNameLooksLikeAudioUnit(requested))
+            return true;
+        if (formatNameLooksLikeVST3(formatName) && formatNameLooksLikeVST3(requested))
+            return true;
+
+        return false;
     }
 
     static void addSearchDirectoryIfPresent(juce::FileSearchPath& path, const juce::File& directory)
@@ -268,6 +296,7 @@ namespace
     {
         const auto knownListPath = getCommandArgValue(tokens, "--known");
         const auto deadMansPedalPath = getCommandArgValue(tokens, "--deadman");
+        const auto requestedFormat = getCommandArgValue(tokens, "--plugin-scan-format");
 
         if (knownListPath.isEmpty() || deadMansPedalPath.isEmpty())
         {
@@ -291,15 +320,22 @@ namespace
         formatManager.addDefaultFormats();
 
         juce::StringArray failedFiles;
+        juce::StringArray blacklistedEntries;
+        int scannedFormatCount = 0;
         for (int formatIndex = 0; formatIndex < formatManager.getNumFormats(); ++formatIndex)
         {
             auto* format = formatManager.getFormat(formatIndex);
             if (format == nullptr)
                 continue;
+            if (!formatMatchesRequested(*format, requestedFormat))
+                continue;
 
             const auto searchPath = buildAugmentedSearchPathForFormat(*format);
             if (searchPath.getNumPaths() <= 0)
                 continue;
+
+            ++scannedFormatCount;
+            deadMansPedalFile.deleteFile();
 
             juce::PluginDirectoryScanner scanner(pluginList,
                                                  *format,
@@ -312,18 +348,39 @@ namespace
             for (const auto& failed : scanner.getFailedFiles())
                 failedFiles.addIfNotAlreadyThere(failed);
 
+            if (deadMansPedalFile.existsAsFile())
+            {
+                juce::StringArray deadmanLines;
+                deadmanLines.addLines(deadMansPedalFile.loadFileAsString());
+                for (auto line : deadmanLines)
+                {
+                    line = line.trim();
+                    if (line.isNotEmpty())
+                        blacklistedEntries.addIfNotAlreadyThere(format->getName() + ": " + line);
+                }
+            }
+
+            juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal(pluginList, deadMansPedalFile);
+            deadMansPedalFile.deleteFile();
+
             if (std::unique_ptr<juce::XmlElement> xml(pluginList.createXml()); xml != nullptr)
                 xml->writeTo(knownListFile);
         }
 
-        juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal(pluginList, deadMansPedalFile);
-        deadMansPedalFile.deleteFile();
+        if (requestedFormat.isNotEmpty() && scannedFormatCount == 0)
+        {
+            std::cout << "ERROR: Requested plugin format not available: "
+                      << requestedFormat.toStdString() << "\n";
+            return 2;
+        }
 
         if (std::unique_ptr<juce::XmlElement> xml(pluginList.createXml()); xml != nullptr)
             xml->writeTo(knownListFile);
 
         for (const auto& failed : failedFiles)
             std::cout << "FAILED: " << failed << "\n";
+        for (const auto& blacklisted : blacklistedEntries)
+            std::cout << "BLACKLISTED: " << blacklisted << "\n";
 
         std::cout << "OK: Plugin scan pass complete.\n";
         return 0;

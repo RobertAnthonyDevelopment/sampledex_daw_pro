@@ -84,6 +84,26 @@ namespace
             || lower.contains("plugin crashed");
     }
 
+    static bool formatNameLooksLikeAudioUnit(const juce::String& formatName)
+    {
+        return formatName.containsIgnoreCase("AudioUnit")
+            || formatName.containsIgnoreCase("AU");
+    }
+
+    static bool formatNameLooksLikeVST3(const juce::String& formatName)
+    {
+        return formatName.containsIgnoreCase("VST3");
+    }
+
+    static juce::String scanFormatDisplayName(const juce::String& formatName)
+    {
+        if (formatNameLooksLikeAudioUnit(formatName))
+            return "AU";
+        if (formatNameLooksLikeVST3(formatName))
+            return "VST3";
+        return formatName;
+    }
+
     static float analyseBufferPeak(const juce::AudioBuffer<float>& buffer, bool removeDc)
     {
         if (buffer.getNumChannels() <= 0 || buffer.getNumSamples() <= 0)
@@ -1122,7 +1142,7 @@ namespace
                 else
                 {
                     const int slotIndex = displayIndexToSlotIndex(i);
-                    if (!track->hasPluginInSlot(slotIndex))
+                    if (!track->hasPluginInSlotNonBlocking(slotIndex))
                     {
                         if (onLoadSlot)
                             onLoadSlot(trackIndex, slotIndex);
@@ -1190,8 +1210,8 @@ namespace
                 return;
 
             const int mappedSlotIndex = displayIndexToSlotIndex(slotIndex);
-            const bool hasPlugin = track->hasPluginInSlot(mappedSlotIndex);
-            const bool isBypassed = hasPlugin && track->isPluginSlotBypassed(mappedSlotIndex);
+            const bool hasPlugin = track->hasPluginInSlotNonBlocking(mappedSlotIndex);
+            const bool isBypassed = hasPlugin && track->isPluginSlotBypassedNonBlocking(mappedSlotIndex);
             const bool isInstrumentSlot = slotIndex == 0;
             const juce::String slotLabel = displayIndexToLabel(slotIndex);
 
@@ -1222,7 +1242,7 @@ namespace
                                    else if (selectedId == 3)
                                    {
                                        if (onBypassChanged)
-                                           onBypassChanged(trackIndex, mappedSlotIndex, !track->isPluginSlotBypassed(mappedSlotIndex));
+                                           onBypassChanged(trackIndex, mappedSlotIndex, !track->isPluginSlotBypassedNonBlocking(mappedSlotIndex));
                                    }
                                    else if (selectedId == 4)
                                    {
@@ -1299,8 +1319,8 @@ namespace
             for (int i = 0; i < slotCount; ++i)
             {
                 const int mappedSlotIndex = displayIndexToSlotIndex(i);
-                const auto name = track->getPluginNameForSlot(mappedSlotIndex);
-                const bool hasPlugin = track->hasPluginInSlot(mappedSlotIndex);
+                const auto name = track->getPluginNameForSlotNonBlocking(mappedSlotIndex);
+                const bool hasPlugin = track->hasPluginInSlotNonBlocking(mappedSlotIndex);
                 slotLabels[static_cast<size_t>(i)].setText(displayIndexToLabel(i) + ": "
                                                            + (hasPlugin ? name : juce::String("Empty")),
                                                            juce::dontSendNotification);
@@ -1312,7 +1332,7 @@ namespace
                 bypassButtons[static_cast<size_t>(i)].setEnabled(hasPlugin);
                 moveUpButtons[static_cast<size_t>(i)].setEnabled(hasPlugin && i > 1);
                 moveDownButtons[static_cast<size_t>(i)].setEnabled(hasPlugin && i > 0 && i < slotCount - 1);
-                bypassButtons[static_cast<size_t>(i)].setToggleState(hasPlugin && track->isPluginSlotBypassed(mappedSlotIndex),
+                bypassButtons[static_cast<size_t>(i)].setToggleState(hasPlugin && track->isPluginSlotBypassedNonBlocking(mappedSlotIndex),
                                                                      juce::dontSendNotification);
             }
         }
@@ -1537,7 +1557,7 @@ namespace
                     if (trackIndex < 0)
                         return;
                     const int slotIndex = displayIndexToSlotIndex(i);
-                    if (track != nullptr && track->hasPluginInSlot(slotIndex))
+                    if (track != nullptr && track->hasPluginInSlotNonBlocking(slotIndex))
                     {
                         if (onOpenSlot)
                             onOpenSlot(trackIndex, slotIndex);
@@ -1823,8 +1843,8 @@ namespace
                 return;
 
             const int mappedSlotIndex = displayIndexToSlotIndex(slotIndex);
-            const bool hasPlugin = track->hasPluginInSlot(mappedSlotIndex);
-            const bool bypassed = hasPlugin && track->isPluginSlotBypassed(mappedSlotIndex);
+            const bool hasPlugin = track->hasPluginInSlotNonBlocking(mappedSlotIndex);
+            const bool bypassed = hasPlugin && track->isPluginSlotBypassedNonBlocking(mappedSlotIndex);
             const bool isInstrumentSlot = slotIndex == 0;
             juce::PopupMenu menu;
             menu.addItem(1, "Open Plugin UI", hasPlugin);
@@ -1853,7 +1873,7 @@ namespace
                                    else if (selectedId == 3)
                                    {
                                        if (onBypassChanged)
-                                           onBypassChanged(trackIndex, mappedSlotIndex, !track->isPluginSlotBypassed(mappedSlotIndex));
+                                           onBypassChanged(trackIndex, mappedSlotIndex, !track->isPluginSlotBypassedNonBlocking(mappedSlotIndex));
                                    }
                                    else if (selectedId == 4)
                                    {
@@ -1976,8 +1996,8 @@ namespace
             for (int i = 0; i < slotCount; ++i)
             {
                 const int mappedSlotIndex = displayIndexToSlotIndex(i);
-                const bool hasPlugin = track->hasPluginInSlot(mappedSlotIndex);
-                const auto name = hasPlugin ? track->getPluginNameForSlot(mappedSlotIndex) : juce::String("Empty");
+                const bool hasPlugin = track->hasPluginInSlotNonBlocking(mappedSlotIndex);
+                const auto name = hasPlugin ? track->getPluginNameForSlotNonBlocking(mappedSlotIndex) : juce::String("Empty");
                 slotButtons[static_cast<size_t>(i)].setButtonText(displayIndexToLabel(i) + ": " + name);
                 slotButtons[static_cast<size_t>(i)].setColour(juce::TextButton::buttonColourId,
                                                               hasPlugin ? sampledex::theme::Colours::accent().withAlpha(0.30f)
@@ -1986,7 +2006,7 @@ namespace
                 clearButtons[static_cast<size_t>(i)].setEnabled(hasPlugin);
                 moveUpButtons[static_cast<size_t>(i)].setEnabled(hasPlugin && i > 1);
                 moveDownButtons[static_cast<size_t>(i)].setEnabled(hasPlugin && i > 0 && i < slotCount - 1);
-                bypassButtons[static_cast<size_t>(i)].setToggleState(hasPlugin && track->isPluginSlotBypassed(mappedSlotIndex),
+                bypassButtons[static_cast<size_t>(i)].setToggleState(hasPlugin && track->isPluginSlotBypassedNonBlocking(mappedSlotIndex),
                                                                      juce::dontSendNotification);
             }
         }
@@ -2704,6 +2724,7 @@ namespace sampledex
         knownPluginListFile = appDataDir.getChildFile("known_plugins.xml");
         startupSettingsFile = appDataDir.getChildFile("startup_settings.txt");
         pluginScanDeadMansPedalFile = appDataDir.getChildFile("plugin_scan_dead_mans_pedal.txt");
+        pluginSessionGuardFile = appDataDir.getChildFile("plugin_session_guard.json");
         quarantinedPluginsFile = appDataDir.getChildFile("plugin_quarantine.txt");
         midiLearnMappingsFile = appDataDir.getChildFile("midi_learn_mappings.txt");
         toolbarLayoutSettingsFile = appDataDir.getChildFile("toolbar_layout.json");
@@ -2718,6 +2739,8 @@ namespace sampledex
             if (xml) knownPluginList.recreateFromXml(*xml);
         }
         loadQuarantinedPlugins();
+        handleUncleanPluginSessionRecovery();
+        writePluginSessionGuard(false);
         loadMidiLearnMappings();
         if (!streamingAudioReadThread.isThreadRunning())
             streamingAudioReadThread.startThread();
@@ -5136,6 +5159,7 @@ namespace sampledex
         midiRouter.setOutputByIndex(-1);
         saveToolbarLayoutSettings();
         saveMidiLearnMappings();
+        writePluginSessionGuard(true);
         if (pluginScanProcess != nullptr && pluginScanProcess->isRunning())
             pluginScanProcess->kill();
         pluginScanProcess.reset();
@@ -5611,7 +5635,7 @@ namespace sampledex
                 return true;
 
             const int slotIndex = static_cast<int>(pressedChar - '1');
-            if (mods.isShiftDown() || !tracks[selectedTrackIndex]->hasPluginInSlot(slotIndex))
+            if (mods.isShiftDown() || !tracks[selectedTrackIndex]->hasPluginInSlotNonBlocking(slotIndex))
                 showPluginListMenu(selectedTrackIndex, &showEditorButton, slotIndex);
             else
                 openPluginEditorWindowForTrack(selectedTrackIndex, slotIndex);
@@ -9292,6 +9316,333 @@ namespace sampledex
         return (desc.pluginFormatName.trim() + "|" + identifier).toLowerCase();
     }
 
+    int MainComponent::getPluginFormatRank(const juce::String& formatName) const
+    {
+       #if JUCE_MAC
+        const bool preferAu = !preferredMacPluginFormat.equalsIgnoreCase("VST3");
+        if (formatNameLooksLikeAudioUnit(formatName))
+            return preferAu ? 0 : 1;
+        if (formatNameLooksLikeVST3(formatName))
+            return preferAu ? 1 : 0;
+       #else
+        if (formatNameLooksLikeVST3(formatName))
+            return 0;
+        if (formatNameLooksLikeAudioUnit(formatName))
+            return 1;
+       #endif
+        return 2;
+    }
+
+    bool MainComponent::pluginDescriptionsShareIdentity(const juce::PluginDescription& a,
+                                                        const juce::PluginDescription& b) const
+    {
+        if (a.isInstrument != b.isInstrument)
+            return false;
+
+        const auto aName = a.name.trim();
+        const auto bName = b.name.trim();
+        if (aName.isEmpty() || bName.isEmpty())
+            return false;
+        if (!aName.equalsIgnoreCase(bName))
+            return false;
+
+        const auto aMfr = a.manufacturerName.trim();
+        const auto bMfr = b.manufacturerName.trim();
+        if (!aMfr.equalsIgnoreCase(bMfr))
+            return false;
+
+        return true;
+    }
+
+    juce::Array<juce::PluginDescription> MainComponent::getPluginLoadCandidates(const juce::PluginDescription& requested,
+                                                                                 bool preferRequestedFormatFirst) const
+    {
+        juce::Array<juce::PluginDescription> directMatches;
+        juce::Array<juce::PluginDescription> identityMatches;
+        juce::StringArray seenKeys;
+
+        const auto addUnique = [&seenKeys](juce::Array<juce::PluginDescription>& destination,
+                                           const juce::PluginDescription& candidate)
+        {
+            const auto key = (candidate.pluginFormatName.trim()
+                              + "|"
+                              + candidate.fileOrIdentifier.trim()
+                              + "|"
+                              + candidate.name.trim()
+                              + "|"
+                              + candidate.manufacturerName.trim()
+                              + "|"
+                              + juce::String(candidate.isInstrument ? 1 : 0)).toLowerCase();
+            if (seenKeys.contains(key))
+                return;
+            seenKeys.add(key);
+            destination.add(candidate);
+        };
+
+        const auto knownTypes = knownPluginList.getTypes();
+        for (const auto& candidate : knownTypes)
+        {
+            if (requested.fileOrIdentifier.isNotEmpty()
+                && candidate.fileOrIdentifier.equalsIgnoreCase(requested.fileOrIdentifier))
+            {
+                if (requested.pluginFormatName.isEmpty()
+                    || candidate.pluginFormatName.equalsIgnoreCase(requested.pluginFormatName))
+                {
+                    addUnique(directMatches, candidate);
+                }
+                else
+                {
+                    addUnique(identityMatches, candidate);
+                }
+                continue;
+            }
+
+            if (pluginDescriptionsShareIdentity(candidate, requested))
+                addUnique(identityMatches, candidate);
+        }
+
+        const auto sortByPreference = [this, &requested, preferRequestedFormatFirst](const juce::PluginDescription& a,
+                                                                                     const juce::PluginDescription& b)
+        {
+            if (preferRequestedFormatFirst && requested.pluginFormatName.isNotEmpty())
+            {
+                const bool aRequestedFormat = a.pluginFormatName.equalsIgnoreCase(requested.pluginFormatName);
+                const bool bRequestedFormat = b.pluginFormatName.equalsIgnoreCase(requested.pluginFormatName);
+                if (aRequestedFormat != bRequestedFormat)
+                    return aRequestedFormat;
+            }
+
+            const int rankA = getPluginFormatRank(a.pluginFormatName);
+            const int rankB = getPluginFormatRank(b.pluginFormatName);
+            if (rankA != rankB)
+                return rankA < rankB;
+            return a.pluginFormatName.compareIgnoreCase(b.pluginFormatName) < 0;
+        };
+
+        std::sort(directMatches.begin(), directMatches.end(), sortByPreference);
+        std::sort(identityMatches.begin(), identityMatches.end(), sortByPreference);
+
+        juce::Array<juce::PluginDescription> ordered;
+        for (const auto& candidate : directMatches)
+            ordered.add(candidate);
+        for (const auto& candidate : identityMatches)
+            ordered.add(candidate);
+
+        if (ordered.isEmpty() && requested.fileOrIdentifier.isNotEmpty())
+            ordered.add(requested);
+
+        return ordered;
+    }
+
+    juce::StringArray MainComponent::getPluginScanFormatsInPreferredOrder() const
+    {
+        juce::StringArray formats;
+        for (int i = 0; i < formatManager.getNumFormats(); ++i)
+        {
+            const auto* format = formatManager.getFormat(i);
+            if (format == nullptr)
+                continue;
+            const auto formatName = format->getName().trim();
+            if (formatName.isNotEmpty())
+                formats.addIfNotAlreadyThere(formatName);
+        }
+
+        std::vector<juce::String> sortedFormats;
+        sortedFormats.reserve(static_cast<size_t>(formats.size()));
+        for (const auto& formatName : formats)
+            sortedFormats.push_back(formatName);
+
+        std::sort(sortedFormats.begin(),
+                  sortedFormats.end(),
+                  [this](const juce::String& a, const juce::String& b)
+                  {
+                      const int rankA = getPluginFormatRank(a);
+                      const int rankB = getPluginFormatRank(b);
+                      if (rankA != rankB)
+                          return rankA < rankB;
+                      return a.compareIgnoreCase(b) < 0;
+                  });
+
+        juce::StringArray ordered;
+        for (const auto& formatName : sortedFormats)
+            ordered.add(formatName);
+        return ordered;
+    }
+
+    void MainComponent::applyDeadMansPedalBlacklist(const juce::String& scanFormatName)
+    {
+        if (!pluginScanDeadMansPedalFile.existsAsFile())
+            return;
+
+        juce::StringArray deadmanEntries;
+        deadmanEntries.addLines(pluginScanDeadMansPedalFile.loadFileAsString());
+        for (auto entry : deadmanEntries)
+        {
+            entry = entry.trim();
+            if (entry.isEmpty())
+                continue;
+            pluginScanBlacklistedItems.addIfNotAlreadyThere(scanFormatDisplayName(scanFormatName)
+                                                            + ": " + entry);
+        }
+
+        if (knownPluginListFile.existsAsFile())
+        {
+            if (std::unique_ptr<juce::XmlElement> xml(juce::XmlDocument::parse(knownPluginListFile)); xml != nullptr)
+                knownPluginList.recreateFromXml(*xml);
+        }
+
+        juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal(knownPluginList,
+                                                                           pluginScanDeadMansPedalFile);
+        pluginScanDeadMansPedalFile.deleteFile();
+
+        if (std::unique_ptr<juce::XmlElement> xml(knownPluginList.createXml()); xml != nullptr)
+            xml->writeTo(knownPluginListFile);
+    }
+
+    void MainComponent::handlePluginScanPassResult(int exitCode, const juce::String& output, bool timedOut)
+    {
+        const auto currentFormat = activeScanFormat;
+        const auto displayFormat = scanFormatDisplayName(currentFormat);
+        juce::StringArray lines;
+        lines.addLines(output);
+
+        for (auto line : lines)
+        {
+            line = line.trim();
+            if (line.startsWithIgnoreCase("FAILED:"))
+            {
+                const auto failedPath = line.fromFirstOccurrenceOf("FAILED:", false, false).trim();
+                if (failedPath.isNotEmpty())
+                    pluginScanFailedItems.addIfNotAlreadyThere(displayFormat + ": " + failedPath);
+                continue;
+            }
+
+            if (line.startsWithIgnoreCase("BLACKLISTED:"))
+            {
+                auto blacklistedItem = line.fromFirstOccurrenceOf("BLACKLISTED:", false, false).trim();
+                if (blacklistedItem.contains(":"))
+                    blacklistedItem = blacklistedItem.fromFirstOccurrenceOf(":", false, false).trim();
+                if (blacklistedItem.isNotEmpty())
+                    pluginScanBlacklistedItems.addIfNotAlreadyThere(displayFormat + ": " + blacklistedItem);
+            }
+        }
+
+        if (timedOut)
+        {
+            pluginScanFailedItems.addIfNotAlreadyThere(displayFormat
+                + ": scan pass timed out after "
+                + juce::String(pluginScanPassTimeoutMs) + " ms");
+        }
+        else if (exitCode != 0)
+        {
+            pluginScanFailedItems.addIfNotAlreadyThere(displayFormat
+                + ": scan pass exited with code "
+                + juce::String(exitCode));
+        }
+
+        if (timedOut || exitCode != 0)
+            applyDeadMansPedalBlacklist(currentFormat);
+        else
+            pluginScanDeadMansPedalFile.deleteFile();
+    }
+
+    void MainComponent::recordLastLoadedPlugin(const juce::PluginDescription& desc)
+    {
+        if (desc.fileOrIdentifier.trim().isEmpty() && desc.name.trim().isEmpty())
+            return;
+        lastLoadedPluginDescription = desc;
+        hasLastLoadedPluginDescription = true;
+        writePluginSessionGuard(false);
+    }
+
+    bool MainComponent::readPluginSessionGuard(bool& cleanState, juce::PluginDescription& lastPlugin) const
+    {
+        cleanState = true;
+        lastPlugin = {};
+        if (!pluginSessionGuardFile.existsAsFile())
+            return false;
+
+        juce::var parsed = juce::JSON::parse(pluginSessionGuardFile.loadFileAsString());
+        auto* root = parsed.getDynamicObject();
+        if (root == nullptr)
+            return false;
+
+        cleanState = static_cast<bool>(root->getProperty("clean"));
+        const juce::var lastPluginVar = root->getProperty("lastPlugin");
+        auto* pluginObj = lastPluginVar.getDynamicObject();
+        if (pluginObj != nullptr)
+        {
+            lastPlugin.pluginFormatName = pluginObj->getProperty("pluginFormatName").toString();
+            lastPlugin.fileOrIdentifier = pluginObj->getProperty("fileOrIdentifier").toString();
+            lastPlugin.name = pluginObj->getProperty("name").toString();
+            lastPlugin.manufacturerName = pluginObj->getProperty("manufacturerName").toString();
+            lastPlugin.isInstrument = static_cast<bool>(pluginObj->getProperty("isInstrument"));
+            lastPlugin.uniqueId = static_cast<int>(pluginObj->getProperty("uniqueId"));
+            lastPlugin.deprecatedUid = static_cast<int>(pluginObj->getProperty("deprecatedUid"));
+        }
+
+        return true;
+    }
+
+    void MainComponent::writePluginSessionGuard(bool cleanState) const
+    {
+        if (pluginSessionGuardFile == juce::File())
+            return;
+
+        auto root = std::make_unique<juce::DynamicObject>();
+        root->setProperty("clean", cleanState);
+        root->setProperty("timestampMs", juce::Time::getMillisecondCounterHiRes());
+
+        if (hasLastLoadedPluginDescription)
+        {
+            auto pluginObj = std::make_unique<juce::DynamicObject>();
+            pluginObj->setProperty("pluginFormatName", lastLoadedPluginDescription.pluginFormatName);
+            pluginObj->setProperty("fileOrIdentifier", lastLoadedPluginDescription.fileOrIdentifier);
+            pluginObj->setProperty("name", lastLoadedPluginDescription.name);
+            pluginObj->setProperty("manufacturerName", lastLoadedPluginDescription.manufacturerName);
+            pluginObj->setProperty("isInstrument", lastLoadedPluginDescription.isInstrument);
+            pluginObj->setProperty("uniqueId", lastLoadedPluginDescription.uniqueId);
+            pluginObj->setProperty("deprecatedUid", lastLoadedPluginDescription.deprecatedUid);
+            root->setProperty("lastPlugin", juce::var(pluginObj.release()));
+        }
+
+        const juce::var serialised(root.release());
+        juce::ignoreUnused(pluginSessionGuardFile.replaceWithText(juce::JSON::toString(serialised, true)));
+    }
+
+    void MainComponent::handleUncleanPluginSessionRecovery()
+    {
+        bool previousSessionClean = true;
+        juce::PluginDescription previousLastPlugin;
+        if (!readPluginSessionGuard(previousSessionClean, previousLastPlugin))
+            return;
+
+        if (previousLastPlugin.fileOrIdentifier.isNotEmpty() || previousLastPlugin.name.isNotEmpty())
+        {
+            lastLoadedPluginDescription = previousLastPlugin;
+            hasLastLoadedPluginDescription = true;
+        }
+
+        if (previousSessionClean || !autoQuarantineOnUncleanExit)
+            return;
+
+        if (previousLastPlugin.fileOrIdentifier.isEmpty() && previousLastPlugin.name.isEmpty())
+            return;
+
+        quarantinePlugin(previousLastPlugin,
+                         "Automatically quarantined after abnormal app termination.");
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon,
+            "Plugin Recovery",
+            "The previous session ended abnormally.\n\n"
+            "Auto-quarantined plugin:\n"
+                + (previousLastPlugin.name.isNotEmpty()
+                       ? previousLastPlugin.name
+                       : previousLastPlugin.fileOrIdentifier)
+                + " (" + previousLastPlugin.pluginFormatName + ")\n\n"
+            "Reason: it was the last plugin loaded before the abnormal termination.");
+    }
+
     bool MainComponent::isPluginQuarantined(const juce::PluginDescription& desc) const
     {
         if (!pluginSafetyGuardsEnabled)
@@ -11328,7 +11679,10 @@ namespace sampledex
     void MainComponent::loadStartupPreferences()
     {
         autoScanPluginsOnStartup = true;
+        autoQuarantineOnUncleanExit = true;
         micPermissionPromptedOnce = false;
+        pluginScanPassTimeoutMs = 45000;
+        preferredMacPluginFormat = "AudioUnit";
         if (canonicalBuildPath.trim().isEmpty())
             canonicalBuildPath = "/Users/robertclemons/Downloads/sampledex_daw-main/build/SampledexChordLab_artefacts/Release/Sampledex ChordLab.app";
         if (startupSettingsFile == juce::File() || !startupSettingsFile.existsAsFile())
@@ -11348,10 +11702,34 @@ namespace sampledex
                 continue;
             }
 
+            if (line.startsWithIgnoreCase("auto_quarantine_on_unclean_exit="))
+            {
+                const auto value = line.fromFirstOccurrenceOf("=", false, false).trim();
+                autoQuarantineOnUncleanExit = value.getIntValue() != 0;
+                continue;
+            }
+
             if (line.startsWithIgnoreCase("mic_permission_prompted_once="))
             {
                 const auto value = line.fromFirstOccurrenceOf("=", false, false).trim();
                 micPermissionPromptedOnce = value.getIntValue() != 0;
+                continue;
+            }
+
+            if (line.startsWithIgnoreCase("plugin_scan_pass_timeout_ms="))
+            {
+                const int parsed = line.fromFirstOccurrenceOf("=", false, false).trim().getIntValue();
+                pluginScanPassTimeoutMs = juce::jlimit(10000, 120000, parsed > 0 ? parsed : 45000);
+                continue;
+            }
+
+            if (line.startsWithIgnoreCase("mac_plugin_preferred_format="))
+            {
+                const auto value = line.fromFirstOccurrenceOf("=", false, false).trim();
+                if (value.equalsIgnoreCase("VST3"))
+                    preferredMacPluginFormat = "VST3";
+                else if (value.equalsIgnoreCase("AudioUnit") || value.equalsIgnoreCase("AU"))
+                    preferredMacPluginFormat = "AudioUnit";
                 continue;
             }
 
@@ -11371,7 +11749,13 @@ namespace sampledex
 
         juce::StringArray lines;
         lines.add("auto_scan_plugins_on_startup=" + juce::String(autoScanPluginsOnStartup ? 1 : 0));
+        lines.add("auto_quarantine_on_unclean_exit=" + juce::String(autoQuarantineOnUncleanExit ? 1 : 0));
         lines.add("mic_permission_prompted_once=" + juce::String(micPermissionPromptedOnce ? 1 : 0));
+        lines.add("plugin_scan_pass_timeout_ms=" + juce::String(pluginScanPassTimeoutMs));
+        lines.add("mac_plugin_preferred_format="
+                  + (preferredMacPluginFormat.equalsIgnoreCase("VST3")
+                         ? juce::String("VST3")
+                         : juce::String("AudioUnit")));
         lines.add("canonical_build_path="
                   + (canonicalBuildPath.isNotEmpty()
                          ? canonicalBuildPath
@@ -11475,44 +11859,6 @@ namespace sampledex
                                       || activeDeviceName.containsIgnoreCase("Built-In")
                                       || activeDeviceName.containsIgnoreCase("Internal")
                                       || activeDeviceName.containsIgnoreCase("Apple");
-        const auto& knownTypes = knownPluginList.getTypes();
-        auto resolveDescription = [&knownTypes](const juce::PluginDescription& requested, juce::PluginDescription& resolved)
-        {
-            if (requested.fileOrIdentifier.isNotEmpty())
-            {
-                for (const auto& candidate : knownTypes)
-                {
-                    if (candidate.fileOrIdentifier != requested.fileOrIdentifier)
-                        continue;
-                    if (requested.pluginFormatName.isNotEmpty()
-                        && !candidate.pluginFormatName.equalsIgnoreCase(requested.pluginFormatName))
-                    {
-                        continue;
-                    }
-                    resolved = candidate;
-                    return true;
-                }
-            }
-
-            if (requested.name.isNotEmpty())
-            {
-                for (const auto& candidate : knownTypes)
-                {
-                    if (!candidate.name.equalsIgnoreCase(requested.name))
-                        continue;
-                    if (requested.pluginFormatName.isNotEmpty()
-                        && !candidate.pluginFormatName.equalsIgnoreCase(requested.pluginFormatName))
-                    {
-                        continue;
-                    }
-                    resolved = candidate;
-                    return true;
-                }
-            }
-
-            resolved = requested;
-            return resolved.fileOrIdentifier.isNotEmpty();
-        };
 
         const int tracksToLoad = juce::jmin(static_cast<int>(loadedProject.tracks.size()), maxRealtimeTracks);
         for (int i = 0; i < tracksToLoad; ++i)
@@ -11584,54 +11930,87 @@ namespace sampledex
             {
                 for (const auto& slot : sourceTrack.pluginSlots)
                 {
-                    juce::PluginDescription resolved;
-                    if (!slot.hasDescription || !resolveDescription(slot.description, resolved))
+                    if (!slot.hasDescription)
                     {
-                        if (slot.hasDescription)
-                        {
-                            loadWarnings.add("Track " + juce::String(i + 1)
-                                             + " missing plugin: "
-                                             + (slot.description.name.isNotEmpty() ? slot.description.name
-                                                                                   : slot.description.fileOrIdentifier));
-                        }
-                        continue;
-                    }
-                    if (isPluginQuarantined(resolved))
-                    {
-                        loadWarnings.add("Track " + juce::String(i + 1)
-                                         + " plugin skipped (quarantined): "
-                                         + (resolved.name.isNotEmpty() ? resolved.name : resolved.fileOrIdentifier));
                         continue;
                     }
 
-                    juce::String probeError;
+                    auto candidates = getPluginLoadCandidates(slot.description, true);
+                    if (candidates.isEmpty())
+                    {
+                        loadWarnings.add("Track " + juce::String(i + 1)
+                                         + " missing plugin: "
+                                         + (slot.description.name.isNotEmpty() ? slot.description.name
+                                                                               : slot.description.fileOrIdentifier));
+                        continue;
+                    }
+
+                    juce::String lastFailure;
+                    bool loaded = false;
+                    juce::PluginDescription loadedDescription;
                     const bool isInstrumentSlot = slot.slotIndex == Track::instrumentSlotIndex;
-                    if (!runPluginIsolationProbe(resolved, isInstrumentSlot, probeError))
+
+                    for (const auto& candidate : candidates)
                     {
-                        quarantinePlugin(resolved, probeError);
-                        loadWarnings.add("Track " + juce::String(i + 1)
-                                         + " plugin probe failed (" + resolved.name + "): "
-                                         + (probeError.isNotEmpty() ? probeError : juce::String("Unknown probe error")));
-                        continue;
+                        if (isPluginQuarantined(candidate))
+                            continue;
+
+                        juce::String probeError;
+                        if (!runPluginIsolationProbe(candidate, isInstrumentSlot, probeError))
+                        {
+                            quarantinePlugin(candidate, probeError);
+                            lastFailure = probeError.isNotEmpty() ? probeError
+                                                                  : juce::String("Plugin probe failed.");
+                            continue;
+                        }
+
+                        juce::String pluginError;
+                        loaded = isInstrumentSlot
+                            ? track->loadInstrumentPlugin(candidate, pluginError)
+                            : track->loadPluginInSlot(slot.slotIndex, candidate, pluginError);
+                        if (!loaded || pluginError.isNotEmpty())
+                        {
+                            if (shouldQuarantinePluginLoadError(pluginError))
+                                quarantinePlugin(candidate, pluginError);
+                            lastFailure = pluginError.isNotEmpty() ? pluginError
+                                                                   : juce::String("Plugin load failed.");
+                            loaded = false;
+                            continue;
+                        }
+
+                        loadedDescription = candidate;
+                        break;
                     }
 
-                    juce::String pluginError;
-                    const bool loaded = isInstrumentSlot
-                        ? track->loadInstrumentPlugin(resolved, pluginError)
-                        : track->loadPluginInSlot(slot.slotIndex, resolved, pluginError);
-                    if (!loaded || pluginError.isNotEmpty())
+                    if (!loaded)
                     {
-                        if (shouldQuarantinePluginLoadError(pluginError))
-                            quarantinePlugin(resolved, pluginError);
                         loadWarnings.add("Track " + juce::String(i + 1)
-                                         + " plugin load failed (" + resolved.name + "): "
-                                         + (pluginError.isNotEmpty() ? pluginError : juce::String("Unknown error")));
+                                         + " plugin load failed ("
+                                         + (slot.description.name.isNotEmpty() ? slot.description.name
+                                                                               : slot.description.fileOrIdentifier)
+                                         + "): "
+                                         + (lastFailure.isNotEmpty() ? lastFailure : juce::String("Unknown error")));
                         continue;
                     }
 
                     if (slot.encodedState.isNotEmpty())
                         track->setPluginStateForSlot(slot.slotIndex, slot.encodedState);
                     track->setPluginSlotBypassed(slot.slotIndex, slot.bypassed);
+                    recordLastLoadedPlugin(loadedDescription);
+
+                    if (slot.description.pluginFormatName.isNotEmpty()
+                        && loadedDescription.pluginFormatName.isNotEmpty()
+                        && !loadedDescription.pluginFormatName.equalsIgnoreCase(slot.description.pluginFormatName))
+                    {
+                        loadWarnings.add("Track " + juce::String(i + 1)
+                                         + " plugin format fallback: "
+                                         + (loadedDescription.name.isNotEmpty() ? loadedDescription.name
+                                                                                : loadedDescription.fileOrIdentifier)
+                                         + " loaded as "
+                                         + loadedDescription.pluginFormatName
+                                         + " (requested "
+                                         + slot.description.pluginFormatName + ").");
+                    }
                 }
             }
             else if (!sourceTrack.pluginSlots.empty())
@@ -11809,10 +12188,24 @@ namespace sampledex
             return;
         }
 
+        pendingScanFormats = getPluginScanFormatsInPreferredOrder();
+        if (pendingScanFormats.isEmpty())
+        {
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                   "Plugin Scan",
+                                                   "No plugin formats are currently available for scanning.");
+            return;
+        }
+
         scanButton.setEnabled(false);
         scanButton.setButtonText("Scanning...");
         pluginScanPassCount = 0;
+        pluginScanTotalPassCount = pendingScanFormats.size();
         pluginScanProgress = -1.0;
+        scanPassStartTimeMs = 0.0;
+        activeScanFormat.clear();
+        pluginScanFailedItems.clear();
+        pluginScanBlacklistedItems.clear();
         pluginScanStatusLabel.setText("Plugin scan: preparing...", juce::dontSendNotification);
         pluginScanDeadMansPedalFile.deleteFile();
         resized();
@@ -11824,14 +12217,22 @@ namespace sampledex
 
     bool MainComponent::startPluginScanPass()
     {
+        if (pendingScanFormats.isEmpty())
+            return false;
+
         const auto executable = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
         if (!executable.existsAsFile())
             return false;
 
+        activeScanFormat = pendingScanFormats[0];
+        pendingScanFormats.remove(0);
+        pluginScanDeadMansPedalFile.deleteFile();
+
         const juce::String command = executable.getFullPathName().quoted()
                                    + " --plugin-scan-pass"
                                    + " --known=" + knownPluginListFile.getFullPathName().quoted()
-                                   + " --deadman=" + pluginScanDeadMansPedalFile.getFullPathName().quoted();
+                                   + " --deadman=" + pluginScanDeadMansPedalFile.getFullPathName().quoted()
+                                   + " --plugin-scan-format=" + activeScanFormat.quoted();
 
         pluginScanProcess = std::make_unique<juce::ChildProcess>();
         if (!pluginScanProcess->start(command))
@@ -11842,8 +12243,13 @@ namespace sampledex
 
         ++pluginScanPassCount;
         pluginScanProgress = -1.0;
-        scanButton.setButtonText("Scanning... (pass " + juce::String(pluginScanPassCount) + ")");
-        pluginScanStatusLabel.setText("Plugin scan pass " + juce::String(pluginScanPassCount) + " running",
+        scanPassStartTimeMs = juce::Time::getMillisecondCounterHiRes();
+        const auto passLabel = juce::String(pluginScanPassCount)
+                             + "/" + juce::String(juce::jmax(1, pluginScanTotalPassCount));
+        const auto displayFormat = scanFormatDisplayName(activeScanFormat);
+        scanButton.setButtonText("Scanning " + displayFormat + "... (" + passLabel + ")");
+        pluginScanStatusLabel.setText("Scanning " + displayFormat
+                                          + " (pass " + passLabel + ")",
                                       juce::dontSendNotification);
         resized();
         refreshStatusText();
@@ -11859,7 +12265,11 @@ namespace sampledex
         scanButton.setEnabled(true);
         scanButton.setButtonText("Scan Plugins");
         pluginScanPassCount = 0;
+        pluginScanTotalPassCount = 0;
         pluginScanProgress = 0.0;
+        scanPassStartTimeMs = 0.0;
+        activeScanFormat.clear();
+        pendingScanFormats.clear();
         pluginScanStatusLabel.setText(success ? "Plugin scan complete" : "Plugin scan failed",
                                       juce::dontSendNotification);
         resized();
@@ -11875,28 +12285,26 @@ namespace sampledex
             }
 
             juce::String completionMessage = "Plugin scan complete.";
-            juce::StringArray failedLines;
-            failedLines.addLines(detailMessage);
-            juce::StringArray failedPlugins;
-            for (auto line : failedLines)
-            {
-                line = line.trim();
-                if (!line.startsWithIgnoreCase("FAILED:"))
-                    continue;
-                auto failedPath = line.fromFirstOccurrenceOf("FAILED:", false, false).trim();
-                if (failedPath.isNotEmpty())
-                    failedPlugins.add(failedPath);
-            }
-            if (!failedPlugins.isEmpty())
+            if (!pluginScanFailedItems.isEmpty())
             {
                 completionMessage
-                    << "\n\nSome plugins were skipped for stability after failing scan:\n"
-                    << failedPlugins.joinIntoString("\n");
+                    << "\n\nSome plugins failed or were skipped:\n"
+                    << pluginScanFailedItems.joinIntoString("\n");
             }
+            if (!pluginScanBlacklistedItems.isEmpty())
+            {
+                completionMessage
+                    << "\n\nAuto-blacklisted from dead-man recovery:\n"
+                    << pluginScanBlacklistedItems.joinIntoString("\n");
+            }
+            if (detailMessage.isNotEmpty() && pluginScanFailedItems.isEmpty())
+                completionMessage << "\n\n" << detailMessage;
 
             juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
                                                    "Plugin Scan",
                                                    completionMessage);
+            pluginScanFailedItems.clear();
+            pluginScanBlacklistedItems.clear();
             return;
         }
 
@@ -11906,6 +12314,8 @@ namespace sampledex
         juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
                                                "Plugin Scan",
                                                message);
+        pluginScanFailedItems.clear();
+        pluginScanBlacklistedItems.clear();
     }
 
     void MainComponent::timerCallback()
@@ -11918,31 +12328,47 @@ namespace sampledex
             {
                 pluginScanProgress = -1.0;
                 pluginScanStatusBar.repaint();
+
+                if (scanPassStartTimeMs > 0.0)
+                {
+                    const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - scanPassStartTimeMs;
+                    if (elapsedMs > static_cast<double>(juce::jmax(1000, pluginScanPassTimeoutMs)))
+                    {
+                        pluginScanProcess->kill();
+                        const auto output = pluginScanProcess->readAllProcessOutput().trim();
+                        pluginScanProcess.reset();
+                        handlePluginScanPassResult(-1, output, true);
+
+                        if (!pendingScanFormats.isEmpty())
+                        {
+                            if (startPluginScanPass())
+                                return;
+                            finishPluginScan(false, "Unable to launch isolated plugin scan process.");
+                            return;
+                        }
+
+                        finishPluginScan(true, output);
+                        return;
+                    }
+                }
                 return;
             }
 
-            const auto exitCode = pluginScanProcess->getExitCode();
+            const int exitCode = static_cast<int>(pluginScanProcess->getExitCode());
             const auto output = pluginScanProcess->readAllProcessOutput().trim();
             pluginScanProcess.reset();
+            scanPassStartTimeMs = 0.0;
 
-            if (exitCode == 0)
+            handlePluginScanPassResult(exitCode, output, false);
+            if (!pendingScanFormats.isEmpty())
             {
-                finishPluginScan(true, output);
+                if (startPluginScanPass())
+                    return;
+                finishPluginScan(false, "Unable to launch isolated plugin scan process.");
                 return;
             }
 
-            if (pluginScanPassCount < maxPluginScanPasses)
-            {
-                juce::Logger::writeToLog("Plugin scan pass failed (exit code "
-                                         + juce::String(exitCode)
-                                         + "), retrying...");
-                if (startPluginScanPass())
-                    return;
-            }
-
-            finishPluginScan(false,
-                             "Plugin scan could not complete safely."
-                             + (output.isNotEmpty() ? ("\n\n" + output) : juce::String()));
+            finishPluginScan(true, output);
             return;
         }
 
@@ -12725,7 +13151,11 @@ namespace sampledex
                    + " M" + juce::String(startupMuteBlocksRemaining))
                 : juce::String("StartSafe Idle");
         const juce::String scanState = (pluginScanProcess != nullptr)
-            ? ("Scan pass " + juce::String(juce::jmax(1, pluginScanPassCount)) + " running")
+            ? ("Scan " + scanFormatDisplayName(activeScanFormat)
+               + " "
+               + juce::String(juce::jmax(1, pluginScanPassCount))
+               + "/"
+               + juce::String(juce::jmax(1, pluginScanTotalPassCount)))
             : juce::String("Scan Idle");
 
         statusLabel.setText(trackText + "  |  " + sendText + "  |  " + clipText + "  |  " + midiText
@@ -13634,7 +14064,7 @@ namespace sampledex
                     && pluginEditorTrackIndex == trackIndex
                     && juce::isPositiveAndBelow(pluginEditorTrackIndex, tracks.size()))
                 {
-                    juce::String pluginName = tracks[pluginEditorTrackIndex]->getPluginNameForSlot(pluginEditorSlotIndex);
+                    juce::String pluginName = tracks[pluginEditorTrackIndex]->getPluginNameForSlotNonBlocking(pluginEditorSlotIndex);
                     if (pluginName.isEmpty())
                         pluginName = "Plugin";
                     const juce::String slotLabel = (pluginEditorSlotIndex == Track::instrumentSlotIndex)
@@ -13725,6 +14155,7 @@ namespace sampledex
                     clonedTrack->setPluginStateForSlot(Track::instrumentSlotIndex, instrumentState);
                 clonedTrack->setPluginSlotBypassed(Track::instrumentSlotIndex,
                                                    sourceTrack->isPluginSlotBypassed(Track::instrumentSlotIndex));
+                recordLastLoadedPlugin(instrumentDescription);
             }
         }
         else
@@ -13775,6 +14206,7 @@ namespace sampledex
             if (state.isNotEmpty())
                 clonedTrack->setPluginStateForSlot(slot, state);
             clonedTrack->setPluginSlotBypassed(slot, sourceTrack->isPluginSlotBypassed(slot));
+            recordLastLoadedPlugin(description);
         }
 
         const int insertTrackIndex = sourceTrackIndex + 1;
@@ -13998,9 +14430,9 @@ namespace sampledex
             }
 
             if (pluginEditorWindow != nullptr
-                && track->hasPluginInSlot(pluginEditorSlotIndex))
+                && track->hasPluginInSlotNonBlocking(pluginEditorSlotIndex))
             {
-                juce::String pluginName = track->getPluginNameForSlot(pluginEditorSlotIndex);
+                juce::String pluginName = track->getPluginNameForSlotNonBlocking(pluginEditorSlotIndex);
                 if (pluginName.isEmpty())
                     pluginName = "Plugin";
                 const juce::String slotLabel = (pluginEditorSlotIndex == Track::instrumentSlotIndex)
@@ -14030,7 +14462,7 @@ namespace sampledex
         if (resolvedSlot == Track::instrumentSlotIndex && !track->hasInstrumentPlugin())
         {
             const int firstLoadedInsert = track->getFirstLoadedPluginSlot();
-            if (firstLoadedInsert != Track::instrumentSlotIndex && track->hasPluginInSlot(firstLoadedInsert))
+            if (firstLoadedInsert != Track::instrumentSlotIndex && track->hasPluginInSlotNonBlocking(firstLoadedInsert))
             {
                 resolvedSlot = firstLoadedInsert;
             }
@@ -14048,7 +14480,7 @@ namespace sampledex
                 return;
             }
         }
-        else if (resolvedSlot != Track::instrumentSlotIndex && !track->hasPluginInSlot(resolvedSlot))
+        else if (resolvedSlot != Track::instrumentSlotIndex && !track->hasPluginInSlotNonBlocking(resolvedSlot))
         {
             const int firstLoadedInsert = track->getFirstLoadedPluginSlot();
             if (firstLoadedInsert == Track::instrumentSlotIndex)
@@ -14057,7 +14489,7 @@ namespace sampledex
                     return;
                 resolvedSlot = Track::instrumentSlotIndex;
             }
-            else if (track->hasPluginInSlot(firstLoadedInsert))
+            else if (track->hasPluginInSlotNonBlocking(firstLoadedInsert))
             {
                 resolvedSlot = firstLoadedInsert;
             }
@@ -14087,7 +14519,7 @@ namespace sampledex
             return;
         }
 
-        juce::String pluginName = track->getPluginNameForSlot(resolvedSlot);
+        juce::String pluginName = track->getPluginNameForSlotNonBlocking(resolvedSlot);
         if (pluginName.isEmpty())
             pluginName = "Plugin";
 
@@ -14364,30 +14796,8 @@ namespace sampledex
             }
         }
 
-       #if JUCE_MAC
-        const auto formatRank = [](const juce::String& formatName)
-        {
-            if (formatName.equalsIgnoreCase("AudioUnit")
-                || formatName.containsIgnoreCase("AU"))
-                return 0;
-            if (formatName.equalsIgnoreCase("VST3"))
-                return 1;
-            return 2;
-        };
-       #else
-        const auto formatRank = [](const juce::String& formatName)
-        {
-            if (formatName.equalsIgnoreCase("VST3"))
-                return 0;
-            if (formatName.equalsIgnoreCase("AudioUnit")
-                || formatName.containsIgnoreCase("AU"))
-                return 1;
-            return 2;
-        };
-       #endif
-
         std::sort(quarantinedPluginTypes.begin(), quarantinedPluginTypes.end(),
-                  [formatRank](const juce::PluginDescription& a, const juce::PluginDescription& b)
+                  [this](const juce::PluginDescription& a, const juce::PluginDescription& b)
                   {
                       const auto manufacturerA = a.manufacturerName.trim().isNotEmpty() ? a.manufacturerName.trim() : juce::String("Other");
                       const auto manufacturerB = b.manufacturerName.trim().isNotEmpty() ? b.manufacturerName.trim() : juce::String("Other");
@@ -14398,15 +14808,15 @@ namespace sampledex
                       const auto byName = a.name.compareIgnoreCase(b.name);
                       if (byName != 0)
                           return byName < 0;
-                      const int rankA = formatRank(a.pluginFormatName);
-                      const int rankB = formatRank(b.pluginFormatName);
+                      const int rankA = getPluginFormatRank(a.pluginFormatName);
+                      const int rankB = getPluginFormatRank(b.pluginFormatName);
                       if (rankA != rankB)
                           return rankA < rankB;
                       return a.pluginFormatName.compareIgnoreCase(b.pluginFormatName) < 0;
                   });
 
         std::sort(pluginTypes.begin(), pluginTypes.end(),
-                  [formatRank](const juce::PluginDescription& a, const juce::PluginDescription& b)
+                  [this](const juce::PluginDescription& a, const juce::PluginDescription& b)
                   {
                       const auto manufacturerA = a.manufacturerName.trim().isNotEmpty() ? a.manufacturerName.trim() : juce::String("Other");
                       const auto manufacturerB = b.manufacturerName.trim().isNotEmpty() ? b.manufacturerName.trim() : juce::String("Other");
@@ -14417,19 +14827,19 @@ namespace sampledex
                       const auto byName = a.name.compareIgnoreCase(b.name);
                       if (byName != 0)
                           return byName < 0;
-                      const int rankA = formatRank(a.pluginFormatName);
-                      const int rankB = formatRank(b.pluginFormatName);
+                      const int rankA = getPluginFormatRank(a.pluginFormatName);
+                      const int rankB = getPluginFormatRank(b.pluginFormatName);
                       if (rankA != rankB)
                           return rankA < rankB;
                       return a.pluginFormatName.compareIgnoreCase(b.pluginFormatName) < 0;
                   });
 
         juce::PopupMenu menu;
-        const bool currentSlotLoaded = targetTrack->hasPluginInSlot(slotIndex);
+        const bool currentSlotLoaded = targetTrack->hasPluginInSlotNonBlocking(slotIndex);
         const bool canOpenCurrentUi = targetingInstrument
             ? targetTrack->hasInstrumentPlugin()
             : currentSlotLoaded;
-        const bool currentInsertBypassed = currentSlotLoaded && targetTrack->isPluginSlotBypassed(slotIndex);
+        const bool currentInsertBypassed = currentSlotLoaded && targetTrack->isPluginSlotBypassedNonBlocking(slotIndex);
         const juce::String slotLabel = targetingInstrument
             ? juce::String("Instrument")
             : juce::String("Insert " + juce::String(slotIndex + 1));
@@ -14447,16 +14857,16 @@ namespace sampledex
         juce::PopupMenu loadedInsertsMenu;
         if (targetTrack->hasInstrumentPlugin())
         {
-            juce::String loadedName = targetTrack->getPluginNameForSlot(Track::instrumentSlotIndex);
+            juce::String loadedName = targetTrack->getPluginNameForSlotNonBlocking(Track::instrumentSlotIndex);
             if (loadedName.isEmpty())
                 loadedName = "Instrument";
             loadedInsertsMenu.addItem(menuIdOpenLoadedInstrument, "Instrument: " + loadedName);
         }
         for (int slot = 0; slot < slotCount; ++slot)
         {
-            if (!targetTrack->hasPluginInSlot(slot))
+            if (!targetTrack->hasPluginInSlotNonBlocking(slot))
                 continue;
-            juce::String loadedName = targetTrack->getPluginNameForSlot(slot);
+            juce::String loadedName = targetTrack->getPluginNameForSlotNonBlocking(slot);
             if (loadedName.isEmpty())
                 loadedName = "Plugin";
             loadedInsertsMenu.addItem(menuIdOpenLoadedInsertBase + slot,
@@ -14466,7 +14876,7 @@ namespace sampledex
             menu.addSubMenu("Open Loaded Plugins", loadedInsertsMenu);
 
         juce::PopupMenu targetInsertMenu;
-        auto instrumentSlotName = targetTrack->getPluginNameForSlot(Track::instrumentSlotIndex);
+        auto instrumentSlotName = targetTrack->getPluginNameForSlotNonBlocking(Track::instrumentSlotIndex);
         if (instrumentSlotName.isEmpty())
             instrumentSlotName = "None";
         targetInsertMenu.addItem(menuIdSwitchTargetInstrument,
@@ -14475,8 +14885,8 @@ namespace sampledex
                                  targetingInstrument);
         for (int slot = 0; slot < slotCount; ++slot)
         {
-            const bool loaded = targetTrack->hasPluginInSlot(slot);
-            juce::String slotName = loaded ? targetTrack->getPluginNameForSlot(slot) : juce::String("Empty");
+            const bool loaded = targetTrack->hasPluginInSlotNonBlocking(slot);
+            juce::String slotName = loaded ? targetTrack->getPluginNameForSlotNonBlocking(slot) : juce::String("Empty");
             if (slotName.isEmpty())
                 slotName = "Plugin";
             targetInsertMenu.addItem(menuIdSwitchTargetInsertBase + slot,
@@ -14585,8 +14995,7 @@ namespace sampledex
                             targetTrackIndex,
                             slotIndex,
                             slotCount,
-                            targetingInstrument,
-                            formatRank](int selectedMenuId)
+                            targetingInstrument](int selectedMenuId)
                            {
                                if (selectedMenuId == 0)
                                    return;
@@ -14611,10 +15020,10 @@ namespace sampledex
 
                                if (selectedMenuId == menuIdToggleBypassCurrentInsert)
                                {
-                                   if (!track->hasPluginInSlot(slotIndex))
+                                   if (!track->hasPluginInSlotNonBlocking(slotIndex))
                                        return;
 
-                                   track->setPluginSlotBypassed(slotIndex, !track->isPluginSlotBypassed(slotIndex));
+                                   track->setPluginSlotBypassed(slotIndex, !track->isPluginSlotBypassedNonBlocking(slotIndex));
                                    refreshChannelRackWindow();
                                    refreshStatusText();
                                    return;
@@ -14622,7 +15031,7 @@ namespace sampledex
 
                                if (selectedMenuId == menuIdClearCurrentInsert)
                                {
-                                   if (!track->hasPluginInSlot(slotIndex))
+                                   if (!track->hasPluginInSlotNonBlocking(slotIndex))
                                        return;
 
                                    track->clearPluginSlot(slotIndex);
@@ -14791,21 +15200,17 @@ namespace sampledex
                                    {
                                        if (candidate.pluginFormatName.equalsIgnoreCase(selectedDescription.pluginFormatName))
                                            continue;
-                                       if (!candidate.name.equalsIgnoreCase(selectedDescription.name))
-                                           continue;
-                                       if (!candidate.manufacturerName.equalsIgnoreCase(selectedDescription.manufacturerName))
-                                           continue;
-                                       if (candidate.isInstrument != selectedDescription.isInstrument)
+                                       if (!pluginDescriptionsShareIdentity(candidate, selectedDescription))
                                            continue;
                                        alternatives.add(candidate);
                                    }
 
                                    std::sort(alternatives.begin(), alternatives.end(),
-                                             [formatRank](const juce::PluginDescription& a,
-                                                          const juce::PluginDescription& b)
+                                             [this](const juce::PluginDescription& a,
+                                                    const juce::PluginDescription& b)
                                              {
-                                                 const int rankA = formatRank(a.pluginFormatName);
-                                                 const int rankB = formatRank(b.pluginFormatName);
+                                                 const int rankA = getPluginFormatRank(a.pluginFormatName);
+                                                 const int rankB = getPluginFormatRank(b.pluginFormatName);
                                                  if (rankA != rankB)
                                                      return rankA < rankB;
                                                  return a.pluginFormatName.compareIgnoreCase(b.pluginFormatName) < 0;
@@ -14833,6 +15238,7 @@ namespace sampledex
                                    return;
                                }
 
+                               recordLastLoadedPlugin(loadedDescription);
                                refreshChannelRackWindow();
                                openPluginEditorWindowForTrack(targetTrackIndex, slotIndex);
 

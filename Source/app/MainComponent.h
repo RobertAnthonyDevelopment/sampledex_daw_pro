@@ -343,6 +343,18 @@ namespace sampledex
         bool runPluginIsolationProbe(const juce::PluginDescription& desc,
                                      bool instrumentPlugin,
                                      juce::String& errorMessage) const;
+        int getPluginFormatRank(const juce::String& formatName) const;
+        bool pluginDescriptionsShareIdentity(const juce::PluginDescription& a,
+                                             const juce::PluginDescription& b) const;
+        juce::Array<juce::PluginDescription> getPluginLoadCandidates(const juce::PluginDescription& requested,
+                                                                      bool preferRequestedFormatFirst) const;
+        juce::StringArray getPluginScanFormatsInPreferredOrder() const;
+        void applyDeadMansPedalBlacklist(const juce::String& scanFormatName);
+        void handlePluginScanPassResult(int exitCode, const juce::String& output, bool timedOut);
+        void recordLastLoadedPlugin(const juce::PluginDescription& desc);
+        bool readPluginSessionGuard(bool& cleanState, juce::PluginDescription& lastPlugin) const;
+        void writePluginSessionGuard(bool cleanState) const;
+        void handleUncleanPluginSessionRecovery();
         ProjectSerializer::ProjectState buildCurrentProjectState() const;
         bool saveProjectStateToFile(const juce::File& destination, juce::String& errorMessage) const;
         bool saveProjectToFile(const juce::File& destination, juce::String& errorMessage);
@@ -387,6 +399,7 @@ namespace sampledex
         juce::File knownPluginListFile;
         juce::File startupSettingsFile;
         juce::File pluginScanDeadMansPedalFile;
+        juce::File pluginSessionGuardFile;
         juce::File quarantinedPluginsFile;
         juce::File midiLearnMappingsFile;
         juce::File toolbarLayoutSettingsFile;
@@ -396,12 +409,22 @@ namespace sampledex
         bool recoveryPromptPending = false;
         bool safeModeStartup = false;
         bool autoScanPluginsOnStartup = true;
+        bool autoQuarantineOnUncleanExit = true;
         bool micPermissionPromptedOnce = false;
         juce::String canonicalBuildPath = "/Users/robertclemons/Downloads/sampledex_daw-main/build/SampledexChordLab_artefacts/Release/Sampledex ChordLab.app";
-        bool pluginSafetyGuardsEnabled = false;
+        bool pluginSafetyGuardsEnabled = true;
+        juce::String preferredMacPluginFormat = "AudioUnit";
         int pluginScanPassCount = 0;
-        static constexpr int maxPluginScanPasses = 18;
+        int pluginScanTotalPassCount = 0;
+        int pluginScanPassTimeoutMs = 45000;
         double pluginScanProgress = 0.0;
+        double scanPassStartTimeMs = 0.0;
+        juce::StringArray pendingScanFormats;
+        juce::String activeScanFormat;
+        juce::StringArray pluginScanFailedItems;
+        juce::StringArray pluginScanBlacklistedItems;
+        juce::PluginDescription lastLoadedPluginDescription;
+        bool hasLastLoadedPluginDescription = false;
         std::atomic<bool> closeRequestInProgress { false };
         std::atomic<bool> startupSafetyRampLoggedRt { false };
         std::atomic<bool> startupSafetyFaultLoggedRt { false };
