@@ -7,6 +7,65 @@
 
 namespace
 {
+    static bool formatLooksLikeVST3(const juce::AudioPluginFormat& format)
+    {
+        return format.getName().containsIgnoreCase("VST3");
+    }
+
+    static bool formatLooksLikeAudioUnit(const juce::AudioPluginFormat& format)
+    {
+        const auto name = format.getName();
+        return name.containsIgnoreCase("AudioUnit") || name.containsIgnoreCase("AU");
+    }
+
+    static void addSearchDirectoryIfPresent(juce::FileSearchPath& path, const juce::File& directory)
+    {
+        if (!directory.isDirectory())
+            return;
+
+        const auto canonical = directory.getFullPathName();
+        for (int i = 0; i < path.getNumPaths(); ++i)
+        {
+            if (path[i].getFullPathName() == canonical)
+                return;
+        }
+
+        path.add(canonical);
+    }
+
+    static juce::FileSearchPath buildAugmentedSearchPathForFormat(juce::AudioPluginFormat& format)
+    {
+        auto searchPath = format.getDefaultLocationsToSearch();
+
+        const auto userHome = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+        const juce::File systemAudioPlugins("/Library/Audio/Plug-Ins");
+        const juce::File userAudioPlugins = userHome.getChildFile("Library")
+                                                    .getChildFile("Audio")
+                                                    .getChildFile("Plug-Ins");
+
+        const auto currentExe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        const auto appContents = currentExe.getParentDirectory().getParentDirectory();
+        const auto appPlugIns = appContents.getChildFile("PlugIns");
+        const auto appResourcesPlugins = appContents.getChildFile("Resources").getChildFile("Plugins");
+
+        if (formatLooksLikeVST3(format))
+        {
+            addSearchDirectoryIfPresent(searchPath, systemAudioPlugins.getChildFile("VST3"));
+            addSearchDirectoryIfPresent(searchPath, userAudioPlugins.getChildFile("VST3"));
+            addSearchDirectoryIfPresent(searchPath, appPlugIns.getChildFile("VST3"));
+            addSearchDirectoryIfPresent(searchPath, appResourcesPlugins.getChildFile("VST3"));
+        }
+        else if (formatLooksLikeAudioUnit(format))
+        {
+            addSearchDirectoryIfPresent(searchPath, systemAudioPlugins.getChildFile("Components"));
+            addSearchDirectoryIfPresent(searchPath, userAudioPlugins.getChildFile("Components"));
+            addSearchDirectoryIfPresent(searchPath, appPlugIns.getChildFile("Components"));
+            addSearchDirectoryIfPresent(searchPath, appResourcesPlugins.getChildFile("Components"));
+        }
+
+        return searchPath;
+    }
+
     static int parsePluginUidArg(const juce::String& token) noexcept
     {
         const auto trimmed = token.trim();
@@ -238,7 +297,7 @@ namespace
             if (format == nullptr)
                 continue;
 
-            const auto searchPath = format->getDefaultLocationsToSearch();
+            const auto searchPath = buildAugmentedSearchPathForFormat(*format);
             if (searchPath.getNumPaths() <= 0)
                 continue;
 

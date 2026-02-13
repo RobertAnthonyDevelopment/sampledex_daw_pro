@@ -66,6 +66,21 @@ fi
 log "Building app"
 cmake --build "$BUILD_DIR" --config Release -j "$cpu_count"
 
+log "Copying optional bundled plugins into app (if present)"
+BUNDLED_SRC="$REPO_ROOT/BundledPlugins"
+APP_PLUGINS_DIR="$CANONICAL_APP/Contents/PlugIns"
+if [[ -d "$BUNDLED_SRC" ]]; then
+  mkdir -p "$APP_PLUGINS_DIR"
+  if [[ -d "$BUNDLED_SRC/VST3" ]]; then
+    mkdir -p "$APP_PLUGINS_DIR/VST3"
+    cp -R "$BUNDLED_SRC/VST3/." "$APP_PLUGINS_DIR/VST3/"
+  fi
+  if [[ -d "$BUNDLED_SRC/Components" ]]; then
+    mkdir -p "$APP_PLUGINS_DIR/Components"
+    cp -R "$BUNDLED_SRC/Components/." "$APP_PLUGINS_DIR/Components/"
+  fi
+fi
+
 log "Validating bundle"
 [[ -d "$CANONICAL_APP" ]] || die "Bundle missing: $CANONICAL_APP"
 [[ -f "$CANONICAL_APP/Contents/Info.plist" ]] || die "Info.plist missing"

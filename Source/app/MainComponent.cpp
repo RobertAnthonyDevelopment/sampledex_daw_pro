@@ -14364,8 +14364,30 @@ namespace sampledex
             }
         }
 
+       #if JUCE_MAC
+        const auto formatRank = [](const juce::String& formatName)
+        {
+            if (formatName.equalsIgnoreCase("AudioUnit")
+                || formatName.containsIgnoreCase("AU"))
+                return 0;
+            if (formatName.equalsIgnoreCase("VST3"))
+                return 1;
+            return 2;
+        };
+       #else
+        const auto formatRank = [](const juce::String& formatName)
+        {
+            if (formatName.equalsIgnoreCase("VST3"))
+                return 0;
+            if (formatName.equalsIgnoreCase("AudioUnit")
+                || formatName.containsIgnoreCase("AU"))
+                return 1;
+            return 2;
+        };
+       #endif
+
         std::sort(quarantinedPluginTypes.begin(), quarantinedPluginTypes.end(),
-                  [](const juce::PluginDescription& a, const juce::PluginDescription& b)
+                  [formatRank](const juce::PluginDescription& a, const juce::PluginDescription& b)
                   {
                       const auto manufacturerA = a.manufacturerName.trim().isNotEmpty() ? a.manufacturerName.trim() : juce::String("Other");
                       const auto manufacturerB = b.manufacturerName.trim().isNotEmpty() ? b.manufacturerName.trim() : juce::String("Other");
@@ -14376,11 +14398,15 @@ namespace sampledex
                       const auto byName = a.name.compareIgnoreCase(b.name);
                       if (byName != 0)
                           return byName < 0;
+                      const int rankA = formatRank(a.pluginFormatName);
+                      const int rankB = formatRank(b.pluginFormatName);
+                      if (rankA != rankB)
+                          return rankA < rankB;
                       return a.pluginFormatName.compareIgnoreCase(b.pluginFormatName) < 0;
                   });
 
         std::sort(pluginTypes.begin(), pluginTypes.end(),
-                  [](const juce::PluginDescription& a, const juce::PluginDescription& b)
+                  [formatRank](const juce::PluginDescription& a, const juce::PluginDescription& b)
                   {
                       const auto manufacturerA = a.manufacturerName.trim().isNotEmpty() ? a.manufacturerName.trim() : juce::String("Other");
                       const auto manufacturerB = b.manufacturerName.trim().isNotEmpty() ? b.manufacturerName.trim() : juce::String("Other");
@@ -14391,6 +14417,10 @@ namespace sampledex
                       const auto byName = a.name.compareIgnoreCase(b.name);
                       if (byName != 0)
                           return byName < 0;
+                      const int rankA = formatRank(a.pluginFormatName);
+                      const int rankB = formatRank(b.pluginFormatName);
+                      if (rankA != rankB)
+                          return rankA < rankB;
                       return a.pluginFormatName.compareIgnoreCase(b.pluginFormatName) < 0;
                   });
 
@@ -14555,7 +14585,8 @@ namespace sampledex
                             targetTrackIndex,
                             slotIndex,
                             slotCount,
-                            targetingInstrument](int selectedMenuId)
+                            targetingInstrument,
+                            formatRank](int selectedMenuId)
                            {
                                if (selectedMenuId == 0)
                                    return;
@@ -14768,15 +14799,6 @@ namespace sampledex
                                            continue;
                                        alternatives.add(candidate);
                                    }
-
-                                   const auto formatRank = [](const juce::String& formatName)
-                                   {
-                                       if (formatName.equalsIgnoreCase("VST3"))
-                                           return 0;
-                                       if (formatName.equalsIgnoreCase("AudioUnit"))
-                                           return 1;
-                                       return 2;
-                                   };
 
                                    std::sort(alternatives.begin(), alternatives.end(),
                                              [formatRank](const juce::PluginDescription& a,

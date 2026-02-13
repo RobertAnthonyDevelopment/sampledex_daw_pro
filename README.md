@@ -44,6 +44,14 @@ Canonical app output:
 The script also writes:
 `build/SampledexChordLab_artefacts/Release/Sampledex ChordLab.app/Contents/Resources/BuildManifest.json`
 
+Optional bundled plugins:
+- Put AU plugins in `BundledPlugins/Components`
+- Put VST3 plugins in `BundledPlugins/VST3`
+- The release script copies them into:
+  `Sampledex ChordLab.app/Contents/PlugIns/Components` and
+  `Sampledex ChordLab.app/Contents/PlugIns/VST3`
+- Plugin scan includes both system/user plugin folders and these app-local plugin folders.
+
 ### Direct CMake fallback (manual)
 ```bash
 export JUCE_DIR=~/JUCE
