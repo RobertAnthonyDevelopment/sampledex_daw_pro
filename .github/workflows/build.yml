@@ -1,0 +1,81 @@
+name: Build DAW
+
+on:
+  # Trigger on push/PR to main branches
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  # Keep manual trigger available
+  workflow_dispatch:
+
+jobs:
+  # --- MACOS BUILD ---
+  build_macos:
+    name: Build macOS
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Install JUCE
+        run: |
+          # Cloning master is risky for production; consider pinning a tag if this breaks later
+          git clone --depth 1 --branch master https://github.com/juce-framework/JUCE.git ~/JUCE
+          echo "JUCE_DIR=$HOME/JUCE" >> $GITHUB_ENV
+
+      - name: Configure CMake
+        # Uses Xcode generator for Mac
+        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DJUCE_DIR="$HOME/JUCE"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Package App
+        # Quotes added to handle spaces in "Sampledex ChordLab.app"
+        run: |
+          cd build/Release
+          zip -r SampledexChordLab_Mac.zip "Sampledex ChordLab.app"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SampledexChordLab-MacOS
+          path: build/Release/SampledexChordLab_Mac.zip
+
+  # --- WINDOWS BUILD ---
+  build_windows:
+    name: Build Windows
+    runs-on: windows-2022
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Install JUCE
+        shell: bash
+        run: |
+          git clone --depth 1 --branch master https://github.com/juce-framework/JUCE.git C:/JUCE
+          echo "JUCE_DIR=C:/JUCE" >> $GITHUB_ENV
+
+      - name: Configure CMake
+        shell: bash
+        # Uses Visual Studio 2022 for Windows
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DJUCE_DIR="C:/JUCE"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SampledexChordLab-Windows
+          # Changed to wildcard *.exe to automatically match SampledexChordLab.exe 
+          # (CMake usually removes spaces from the exe name on Windows)
+          path: "build/Release/*.exe"
