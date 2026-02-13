@@ -7,6 +7,37 @@ and produces one canonical app output path.
 
 ---
 
+## Project status (as of February 13, 2026)
+
+This project is currently in an **unstable, in-progress DAW state** and is **not release-ready for production sessions** yet.
+
+### What is working
+- The app builds successfully on macOS via `scripts/release_macos.sh` and produces a universal app binary.
+- Core DAW UI/components are present (tracks, mixer, arrangement/timeline, plugin hosting surface).
+- AU/VST3 scan flow now runs in isolated passes per format with timeout/continuation behavior.
+
+### Known blocking reliability issues
+- Startup buzz/noise can occur on launch on some systems.
+- Some plugins can still hard-crash the audio callback thread.
+- AU discovery/scan reliability is still inconsistent on some machines.
+- Format fallback/restore behavior still needs hardening and validation.
+
+### Tracked issues (handoff list)
+- [#1 Startup buzz/noise on launch](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/1)
+- [#2 Audio callback crash hardening](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/2)
+- [#3 AU scan hang/timeout handling](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/3)
+- [#4 AU discovery missing from known list](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/4)
+- [#5 AU-first format policy consistency](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/5)
+- [#6 Project restore cross-format fallback](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/6)
+- [#7 Auto-quarantine after unclean termination](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/7)
+- [#8 UI/RT lock contention in plugin metadata](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/8)
+- [#9 Scan UX per-format diagnostics](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/9)
+- [#10 QA regression matrix for AU+VST3 reliability](https://github.com/RobertAnthonyDevelopment/sampledex_daw_pro/issues/10)
+
+If you are evaluating this project now, treat it as a development snapshot and expect instability while the above issues are being addressed.
+
+---
+
 ## What's new in v2
 
 ### Clear tabs
