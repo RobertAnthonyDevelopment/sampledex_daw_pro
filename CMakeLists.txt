@@ -49,32 +49,42 @@ juce_generate_juce_header(SampledexChordLab)
 # --- 4. Source Files ---
 target_sources(SampledexChordLab PRIVATE
     # Entry Point
-    Source/Main.cpp
-    Source/MainComponent.h
-    Source/MainComponent.cpp
-    Source/AppMetadata.h
+    Source/app/Main.cpp
+    Source/app/MainComponent.h
+    Source/app/MainComponent.cpp
+    Source/core/AppMetadata.h
     
     # DAW Engine
-    Source/Track.h
-    Source/Mixer.h
-    Source/TimelineModel.h
-    Source/TransportEngine.h
-    Source/TimelineComponent.h
-    Source/PianoRollComponent.h
-    Source/StepSequencerComponent.h
-    Source/LcdDisplay.h
-    Source/ProjectSerializer.h
-    Source/ScheduledMidiOutput.h  # NEW
-    Source/RealtimeGraphScheduler.h
-    Source/StreamingClipSource.h
-    Source/StreamingClipSource.cpp
+    Source/engine/Track.h
+    Source/ui/Mixer.h
+    Source/engine/TimelineModel.h
+    Source/engine/TransportEngine.h
+    Source/ui/TimelineComponent.h
+    Source/ui/PianoRollComponent.h
+    Source/ui/StepSequencerComponent.h
+    Source/ui/LcdDisplay.h
+    Source/project/ProjectSerializer.h
+    Source/engine/ScheduledMidiOutput.h
+    Source/engine/RealtimeGraphScheduler.h
+    Source/audio/StreamingClipSource.h
+    Source/audio/StreamingClipSource.cpp
     
     # Utilities
-    Source/Theme.h
-    Source/MidiDeviceRouter.h
-    Source/MidiDeviceRouter.cpp
-    Source/ChordEngine.h
-    Source/ChordEngine.cpp
+    Source/core/Theme.h
+    Source/audio/MidiDeviceRouter.h
+    Source/audio/MidiDeviceRouter.cpp
+    Source/engine/ChordEngine.h
+    Source/engine/ChordEngine.cpp
+)
+
+target_include_directories(SampledexChordLab PRIVATE
+    Source
+    Source/app
+    Source/audio
+    Source/core
+    Source/engine
+    Source/project
+    Source/ui
 )
 
 # --- 5. Flags ---
