@@ -1970,6 +1970,21 @@ namespace sampledex
             builtInDelayBuffer.clear();
             builtInDelayWritePosition = 0;
             builtInDelayLastSampleRate = safeSampleRate;
+            builtInGateEnvelope = 0.0f;
+            builtInSaturationSmoothedDrive = targetDriveForReset();
+            builtInSaturationSmoothedMix = targetMixForReset();
+            builtInSaturationDcPrevInput = { 0.0f, 0.0f };
+            builtInSaturationDcPrevOutput = { 0.0f, 0.0f };
+        }
+
+        float targetDriveForReset() const
+        {
+            return juce::jlimit(1.0f, 8.0f, builtInSaturationDrive.load(std::memory_order_relaxed));
+        }
+
+        float targetMixForReset() const
+        {
+            return juce::jlimit(0.0f, 1.0f, builtInSaturationMix.load(std::memory_order_relaxed));
         }
 
         void applyBuiltInGateLocked(juce::AudioBuffer<float>& buffer, int channels, int samples)
@@ -2010,25 +2025,53 @@ namespace sampledex
 
         void applyBuiltInSaturationLocked(juce::AudioBuffer<float>& buffer, int channels, int samples)
         {
-            const float drive = juce::jlimit(1.0f, 8.0f, builtInSaturationDrive.load(std::memory_order_relaxed));
-            const float mix = juce::jlimit(0.0f, 1.0f, builtInSaturationMix.load(std::memory_order_relaxed));
-            if (mix <= 0.0001f)
+            if (samples <= 0 || channels <= 0)
                 return;
 
-            const float normalise = 1.0f / std::tanh(drive);
+            const float targetDrive = juce::jlimit(1.0f, 8.0f, builtInSaturationDrive.load(std::memory_order_relaxed));
+            const float targetMix = juce::jlimit(0.0f, 1.0f, builtInSaturationMix.load(std::memory_order_relaxed));
+            if (targetMix <= 0.0001f && builtInSaturationSmoothedMix <= 0.0001f)
+                return;
+
+            float smoothedDrive = builtInSaturationSmoothedDrive;
+            float smoothedMix = builtInSaturationSmoothedMix;
+            const float driveStep = (targetDrive - smoothedDrive) / static_cast<float>(samples);
+            const float mixStep = (targetMix - smoothedMix) / static_cast<float>(samples);
+            constexpr float dcReject = 0.995f;
+
             for (int ch = 0; ch < channels; ++ch)
             {
                 auto* write = buffer.getWritePointer(ch);
                 if (write == nullptr)
                     continue;
 
+                float prevInput = builtInSaturationDcPrevInput[static_cast<size_t>(ch)];
+                float prevOutput = builtInSaturationDcPrevOutput[static_cast<size_t>(ch)];
+                float channelDrive = smoothedDrive;
+                float channelMix = smoothedMix;
+
                 for (int i = 0; i < samples; ++i)
                 {
+                    channelDrive += driveStep;
+                    channelMix += mixStep;
+
                     const float dry = write[i];
-                    const float wet = std::tanh(dry * drive) * normalise;
-                    write[i] = dry + ((wet - dry) * mix);
+                    const float dcRemoved = dry - prevInput + (dcReject * prevOutput);
+                    prevInput = dry;
+                    prevOutput = dcRemoved;
+
+                    const float safeDrive = juce::jmax(1.0e-4f, channelDrive);
+                    const float normalise = 1.0f / std::tanh(safeDrive);
+                    const float wet = std::tanh(dcRemoved * safeDrive) * normalise;
+                    write[i] = dry + ((wet - dry) * juce::jlimit(0.0f, 1.0f, channelMix));
                 }
+
+                builtInSaturationDcPrevInput[static_cast<size_t>(ch)] = prevInput;
+                builtInSaturationDcPrevOutput[static_cast<size_t>(ch)] = prevOutput;
             }
+
+            builtInSaturationSmoothedDrive = targetDrive;
+            builtInSaturationSmoothedMix = targetMix;
         }
 
         void applyBuiltInDelayLocked(juce::AudioBuffer<float>& buffer, int channels, int samples)
@@ -2425,6 +2468,10 @@ namespace sampledex
         std::atomic<float> builtInDelayMix { 0.22f };
         std::atomic<float> builtInSaturationDrive { 2.0f };
         std::atomic<float> builtInSaturationMix { 0.35f };
+        float builtInSaturationSmoothedDrive = 2.0f;
+        float builtInSaturationSmoothedMix = 0.35f;
+        std::array<float, 2> builtInSaturationDcPrevInput { 0.0f, 0.0f };
+        std::array<float, 2> builtInSaturationDcPrevOutput { 0.0f, 0.0f };
         std::atomic<float> builtInGateThresholdDb { -52.0f };
         std::atomic<float> builtInGateAttackMs { 4.0f };
         std::atomic<float> builtInGateReleaseMs { 75.0f };
