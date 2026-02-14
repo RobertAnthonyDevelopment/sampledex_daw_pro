@@ -2027,13 +2027,15 @@ namespace sampledex
         {
             if (channels <= 0 || samples <= 0)
                 return;
-            if (builtInDelayBuffer.getNumChannels() < channels || builtInDelayBuffer.getNumSamples() <= 1)
+            const int delayBufferChannels = builtInDelayBuffer.getNumChannels();
+            const int delayBufferLength = builtInDelayBuffer.getNumSamples();
+            if (delayBufferChannels < channels || delayBufferLength <= 1)
                 return;
 
             const double sr = juce::jmax(8000.0, builtInDelayLastSampleRate);
             const float delayMs = juce::jlimit(5.0f, 1800.0f, builtInDelayTimeMs.load(std::memory_order_relaxed));
             const int delaySamples = juce::jlimit(1,
-                                                  builtInDelayBuffer.getNumSamples() - 1,
+                                                  delayBufferLength - 1,
                                                   static_cast<int>(std::round((delayMs * 0.001f) * sr)));
             const float feedback = juce::jlimit(0.0f, 0.95f, builtInDelayFeedback.load(std::memory_order_relaxed));
             const float mix = juce::jlimit(0.0f, 1.0f, builtInDelayMix.load(std::memory_order_relaxed));
@@ -2041,18 +2043,26 @@ namespace sampledex
                 return;
 
             int writePos = juce::jlimit(0,
-                                        builtInDelayBuffer.getNumSamples() - 1,
+                                        delayBufferLength - 1,
                                         builtInDelayWritePosition);
             int readPos = writePos - delaySamples;
             while (readPos < 0)
-                readPos += builtInDelayBuffer.getNumSamples();
+                readPos += delayBufferLength;
+
+            std::array<float*, 2> inputWritePointers { nullptr, nullptr };
+            std::array<float*, 2> delayWritePointers { nullptr, nullptr };
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                inputWritePointers[static_cast<size_t>(ch)] = buffer.getWritePointer(ch);
+                delayWritePointers[static_cast<size_t>(ch)] = builtInDelayBuffer.getWritePointer(ch);
+            }
 
             for (int i = 0; i < samples; ++i)
             {
                 for (int ch = 0; ch < channels; ++ch)
                 {
-                    auto* write = buffer.getWritePointer(ch);
-                    auto* delayWrite = builtInDelayBuffer.getWritePointer(ch);
+                    auto* write = inputWritePointers[static_cast<size_t>(ch)];
+                    auto* delayWrite = delayWritePointers[static_cast<size_t>(ch)];
                     if (write == nullptr || delayWrite == nullptr)
                         continue;
 
@@ -2062,9 +2072,9 @@ namespace sampledex
                     delayWrite[writePos] = juce::jlimit(-1.5f, 1.5f, dry + (delayed * feedback));
                 }
 
-                if (++writePos >= builtInDelayBuffer.getNumSamples())
+                if (++writePos >= delayBufferLength)
                     writePos = 0;
-                if (++readPos >= builtInDelayBuffer.getNumSamples())
+                if (++readPos >= delayBufferLength)
                     readPos = 0;
             }
 
