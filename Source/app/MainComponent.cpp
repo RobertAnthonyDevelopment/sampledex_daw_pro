@@ -7343,10 +7343,10 @@ namespace sampledex
         constexpr float softClipDrive = 1.34f;
         const float softClipNormaliser = std::tanh(softClipDrive);
         constexpr float limiterCeiling = 0.972f;
-        const double sampleRate = juce::jmax(1.0, sampleRateRt.load(std::memory_order_relaxed));
-        const float limiterAttack = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.0015)));
-        const float limiterRelease = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.045)));
-        const float limiterRecovery = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.030)));
+        const double limiterSampleRate = juce::jmax(1.0, sampleRateRt.load(std::memory_order_relaxed));
+        const float limiterAttack = static_cast<float>(1.0 - std::exp(-1.0 / (limiterSampleRate * 0.0015)));
+        const float limiterRelease = static_cast<float>(1.0 - std::exp(-1.0 / (limiterSampleRate * 0.045)));
+        const float limiterRecovery = static_cast<float>(1.0 - std::exp(-1.0 / (limiterSampleRate * 0.030)));
         const float dezipperCoeff = masterGainDezipperCoeff > 0.0f
             ? masterGainDezipperCoeff
             : 0.0015f;
@@ -12379,30 +12379,40 @@ namespace sampledex
                              : (tracks[juce::jlimit(0, tracks.size() - 1, selectedTrackIndex)]->getTrackName() + " Project"));
         const juce::File initialTarget = documentsDir.getChildFile(defaultName + ".sampledex");
 
-        juce::FileChooser chooser("Save Project As",
-                                  initialTarget,
-                                  "*.sampledex;*.xml",
-                                  true);
+        projectFileChooser = std::make_unique<juce::FileChooser>("Save Project As",
+                                                                  initialTarget,
+                                                                  "*.sampledex;*.xml",
+                                                                  true);
 
-        if (!chooser.browseForFileToSave(true))
-        {
-            cancelClose("save-as-cancel");
-            return;
-        }
+        const auto flags = juce::FileBrowserComponent::saveMode
+                         | juce::FileBrowserComponent::canSelectFiles
+                         | juce::FileBrowserComponent::warnAboutOverwriting;
+        projectFileChooser->launchAsync(flags,
+                                        [this](const juce::FileChooser& chooser)
+                                        {
+                                            const juce::File selectedFile = chooser.getResult();
+                                            projectFileChooser.reset();
 
-        juce::String error;
-        if (!saveProjectToFile(chooser.getResult(), error))
-        {
-            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                                   "Save Project",
-                                                   error.isNotEmpty() ? error
-                                                                      : juce::String("Project save failed."));
-            cancelClose("save-as-failed");
-            return;
-        }
+                                            if (selectedFile == juce::File{})
+                                            {
+                                                cancelClose("save-as-cancel");
+                                                return;
+                                            }
 
-        logCloseDecision("save-as-success");
-        quitNow();
+                                            juce::String error;
+                                            if (!saveProjectToFile(selectedFile, error))
+                                            {
+                                                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                                                       "Save Project",
+                                                                                       error.isNotEmpty() ? error
+                                                                                                          : juce::String("Project save failed."));
+                                                cancelClose("save-as-failed");
+                                                return;
+                                            }
+
+                                            logCloseDecision("save-as-success");
+                                            quitNow();
+                                        });
     }
 
     bool MainComponent::handleApplicationCloseRequest()
