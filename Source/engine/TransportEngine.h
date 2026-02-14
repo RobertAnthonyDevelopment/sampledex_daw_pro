@@ -30,7 +30,7 @@ namespace sampledex
             juce::ScopedLock lock(stateLock);
             positionInfo.resetToDefault();
             updateDerivedFieldsLocked();
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
         }
 
         void prepare(double newSampleRate)
@@ -39,22 +39,35 @@ namespace sampledex
             if (newSampleRate > 0.0)
                 sampleRate = newSampleRate;
             updateDerivedFieldsLocked();
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
         }
 
         void play()
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             positionInfo.isPlaying = true;
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
         }
 
         void stop()
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             positionInfo.isPlaying = false;
             positionInfo.isRecording = false;
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
+        }
+
+        void playRt() noexcept
+        {
+            isPlayingRt.store(true, std::memory_order_relaxed);
+        }
+
+        void stopRt() noexcept
+        {
+            isPlayingRt.store(false, std::memory_order_relaxed);
+            isRecordingRt.store(false, std::memory_order_relaxed);
         }
 
         bool playing() const
@@ -70,18 +83,20 @@ namespace sampledex
         void setRecording(bool shouldRecord)
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             positionInfo.isRecording = shouldRecord;
             if (shouldRecord)
                 positionInfo.isPlaying = true;
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
         }
 
         void setTempo(double newBpm)
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             positionInfo.bpm = juce::jmax(1.0, newBpm);
             updateDerivedFieldsLocked();
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
         }
 
         double getTempo() const
@@ -119,10 +134,11 @@ namespace sampledex
         void setTimeSignature(int numerator, int denominator)
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             positionInfo.timeSigNumerator = juce::jmax(1, numerator);
             positionInfo.timeSigDenominator = juce::jmax(1, denominator);
             updateDerivedFieldsLocked();
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
         }
 
         void setPosition(double beat)
@@ -133,30 +149,39 @@ namespace sampledex
         void setPositionBeats(double beat)
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             positionInfo.ppqPosition = juce::jmax(0.0, beat);
             updateSampleFromBeatLocked();
             updateDerivedFieldsLocked();
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
+        }
+
+        void setPositionBeatsRt(double beat) noexcept
+        {
+            const auto targetBeat = juce::jmax(0.0, beat);
+            const auto localSamplesPerBeat = samplesPerBeatRt.load(std::memory_order_relaxed);
+            const auto samplePos = targetBeat * localSamplesPerBeat;
+            currentBeatRt.store(targetBeat, std::memory_order_relaxed);
+            currentSampleRt.store(juce::jmax<int64_t>(0, static_cast<int64_t>(std::llround(samplePos))), std::memory_order_relaxed);
         }
 
         void setPositionSamples(int64_t samplePosition)
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             positionInfo.timeInSamples = juce::jmax<int64_t>(0, samplePosition);
             positionInfo.ppqPosition = beatsPerSample * static_cast<double>(positionInfo.timeInSamples);
             updateDerivedFieldsLocked();
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
         }
 
         BlockRange advance(int numSamples)
         {
-            juce::ScopedLock lock(stateLock);
-
             BlockRange block;
-            block.startBeat = positionInfo.ppqPosition;
-            block.startSample = positionInfo.timeInSamples;
+            block.startBeat = currentBeatRt.load(std::memory_order_relaxed);
+            block.startSample = currentSampleRt.load(std::memory_order_relaxed);
 
-            if (!positionInfo.isPlaying || numSamples <= 0)
+            if (!isPlayingRt.load(std::memory_order_relaxed) || numSamples <= 0)
             {
                 block.endBeat = block.startBeat;
                 block.endSample = block.startSample;
@@ -164,22 +189,26 @@ namespace sampledex
             }
 
             const auto deltaSamples = static_cast<int64_t>(numSamples);
-            const auto deltaBeats = beatsPerSample * static_cast<double>(numSamples);
+            const auto beatsPerSampleLocal = beatsPerSampleRt.load(std::memory_order_relaxed);
+            const auto deltaBeats = beatsPerSampleLocal * static_cast<double>(numSamples);
 
-            auto nextSample = positionInfo.timeInSamples + deltaSamples;
-            auto nextBeat = positionInfo.ppqPosition + deltaBeats;
+            auto nextSample = block.startSample + deltaSamples;
+            auto nextBeat = block.startBeat + deltaBeats;
 
-            if (positionInfo.isLooping && positionInfo.ppqLoopEnd > positionInfo.ppqLoopStart)
+            const bool looping = isLoopingRt.load(std::memory_order_relaxed);
+            const double loopStart = loopStartBeatRt.load(std::memory_order_relaxed);
+            const double loopEnd = loopEndBeatRt.load(std::memory_order_relaxed);
+            if (looping && loopEnd > loopStart)
             {
-                const auto loopLength = positionInfo.ppqLoopEnd - positionInfo.ppqLoopStart;
+                const auto loopLength = loopEnd - loopStart;
                 if (loopLength > 0.0)
                 {
-                    while (nextBeat >= positionInfo.ppqLoopEnd)
+                    while (nextBeat >= loopEnd)
                     {
                         nextBeat -= loopLength;
                         block.wrapped = true;
                     }
-                    while (nextBeat < positionInfo.ppqLoopStart)
+                    while (nextBeat < loopStart)
                     {
                         nextBeat += loopLength;
                         block.wrapped = true;
@@ -187,56 +216,59 @@ namespace sampledex
                 }
             }
 
-            positionInfo.timeInSamples = nextSample;
-            positionInfo.ppqPosition = nextBeat;
-            updateDerivedFieldsLocked();
-            syncRealtimeAtomicsLocked();
+            currentSampleRt.store(nextSample, std::memory_order_relaxed);
+            currentBeatRt.store(nextBeat, std::memory_order_relaxed);
 
-            block.endBeat = positionInfo.ppqPosition;
-            block.endSample = positionInfo.timeInSamples;
+            block.endBeat = nextBeat;
+            block.endSample = nextSample;
             return block;
         }
 
         BlockRange advanceWithTempo(int numSamples, double newBpm)
         {
-            juce::ScopedLock lock(stateLock);
-
             const double clampedTempo = juce::jmax(1.0, newBpm);
-            if (std::abs(positionInfo.bpm - clampedTempo) > 1.0e-9)
+            double beatsPerSampleLocal = beatsPerSampleRt.load(std::memory_order_relaxed);
+            if (std::abs(tempoRt.load(std::memory_order_relaxed) - clampedTempo) > 1.0e-9)
             {
-                positionInfo.bpm = clampedTempo;
-                updateDerivedFieldsLocked();
+                const auto localSampleRate = sampleRateRt.load(std::memory_order_relaxed);
+                const auto localSamplesPerBeat = (60.0 / clampedTempo) * localSampleRate;
+                beatsPerSampleLocal = localSamplesPerBeat > 0.0 ? (1.0 / localSamplesPerBeat) : 0.0;
+                tempoRt.store(clampedTempo, std::memory_order_relaxed);
+                samplesPerBeatRt.store(localSamplesPerBeat, std::memory_order_relaxed);
+                beatsPerSampleRt.store(beatsPerSampleLocal, std::memory_order_relaxed);
             }
 
             BlockRange block;
-            block.startBeat = positionInfo.ppqPosition;
-            block.startSample = positionInfo.timeInSamples;
+            block.startBeat = currentBeatRt.load(std::memory_order_relaxed);
+            block.startSample = currentSampleRt.load(std::memory_order_relaxed);
 
-            if (!positionInfo.isPlaying || numSamples <= 0)
+            if (!isPlayingRt.load(std::memory_order_relaxed) || numSamples <= 0)
             {
-                syncRealtimeAtomicsLocked();
                 block.endBeat = block.startBeat;
                 block.endSample = block.startSample;
                 return block;
             }
 
             const auto deltaSamples = static_cast<int64_t>(numSamples);
-            const auto deltaBeats = beatsPerSample * static_cast<double>(numSamples);
+            const auto deltaBeats = beatsPerSampleLocal * static_cast<double>(numSamples);
 
-            const auto nextSample = positionInfo.timeInSamples + deltaSamples;
-            auto nextBeat = positionInfo.ppqPosition + deltaBeats;
+            const auto nextSample = block.startSample + deltaSamples;
+            auto nextBeat = block.startBeat + deltaBeats;
 
-            if (positionInfo.isLooping && positionInfo.ppqLoopEnd > positionInfo.ppqLoopStart)
+            const bool looping = isLoopingRt.load(std::memory_order_relaxed);
+            const double loopStart = loopStartBeatRt.load(std::memory_order_relaxed);
+            const double loopEnd = loopEndBeatRt.load(std::memory_order_relaxed);
+            if (looping && loopEnd > loopStart)
             {
-                const auto loopLength = positionInfo.ppqLoopEnd - positionInfo.ppqLoopStart;
+                const auto loopLength = loopEnd - loopStart;
                 if (loopLength > 0.0)
                 {
-                    while (nextBeat >= positionInfo.ppqLoopEnd)
+                    while (nextBeat >= loopEnd)
                     {
                         nextBeat -= loopLength;
                         block.wrapped = true;
                     }
-                    while (nextBeat < positionInfo.ppqLoopStart)
+                    while (nextBeat < loopStart)
                     {
                         nextBeat += loopLength;
                         block.wrapped = true;
@@ -244,23 +276,22 @@ namespace sampledex
                 }
             }
 
-            positionInfo.timeInSamples = nextSample;
-            positionInfo.ppqPosition = nextBeat;
-            updateDerivedFieldsLocked();
-            syncRealtimeAtomicsLocked();
+            currentSampleRt.store(nextSample, std::memory_order_relaxed);
+            currentBeatRt.store(nextBeat, std::memory_order_relaxed);
 
-            block.endBeat = positionInfo.ppqPosition;
-            block.endSample = positionInfo.timeInSamples;
+            block.endBeat = nextBeat;
+            block.endSample = nextSample;
             return block;
         }
 
         void setLoop(bool enable, double startBeat, double endBeat)
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             positionInfo.isLooping = enable;
             positionInfo.ppqLoopStart = juce::jmax(0.0, startBeat);
             positionInfo.ppqLoopEnd = juce::jmax(positionInfo.ppqLoopStart + 0.0001, endBeat);
-            syncRealtimeAtomicsLocked();
+            publishRtStateLocked();
         }
 
         bool isLooping() const
@@ -295,19 +326,21 @@ namespace sampledex
 
         int getLookaheadSamplesForBeats(double lookaheadBeats) const
         {
-            juce::ScopedLock lock(stateLock);
-            return juce::jmax(0, juce::roundToInt(lookaheadBeats * samplesPerBeat));
+            const auto localSamplesPerBeat = samplesPerBeatRt.load(std::memory_order_relaxed);
+            return juce::jmax(0, juce::roundToInt(lookaheadBeats * localSamplesPerBeat));
         }
 
         juce::AudioPlayHead::CurrentPositionInfo getCurrentPositionInfo() const
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
             return positionInfo;
         }
 
         juce::Optional<juce::AudioPlayHead::PositionInfo> getPosition() const override
         {
             juce::ScopedLock lock(stateLock);
+            refreshFromRtLocked();
 
             juce::AudioPlayHead::PositionInfo info;
             info.setTimeInSamples(positionInfo.timeInSamples);
@@ -354,17 +387,35 @@ namespace sampledex
                 positionInfo.ppqPositionOfLastBarStart = 0.0;
         }
 
-        void syncRealtimeAtomicsLocked()
+        void publishRtStateLocked()
         {
             currentBeatRt.store(positionInfo.ppqPosition, std::memory_order_relaxed);
             currentSampleRt.store(positionInfo.timeInSamples, std::memory_order_relaxed);
             tempoRt.store(positionInfo.bpm, std::memory_order_relaxed);
+            samplesPerBeatRt.store(samplesPerBeat, std::memory_order_relaxed);
             beatsPerSampleRt.store(beatsPerSample, std::memory_order_relaxed);
             isPlayingRt.store(positionInfo.isPlaying, std::memory_order_relaxed);
             isRecordingRt.store(positionInfo.isRecording, std::memory_order_relaxed);
             isLoopingRt.store(positionInfo.isLooping, std::memory_order_relaxed);
             loopStartBeatRt.store(positionInfo.ppqLoopStart, std::memory_order_relaxed);
             loopEndBeatRt.store(positionInfo.ppqLoopEnd, std::memory_order_relaxed);
+            sampleRateRt.store(sampleRate, std::memory_order_relaxed);
+        }
+
+        void refreshFromRtLocked()
+        {
+            positionInfo.ppqPosition = currentBeatRt.load(std::memory_order_relaxed);
+            positionInfo.timeInSamples = currentSampleRt.load(std::memory_order_relaxed);
+            positionInfo.bpm = tempoRt.load(std::memory_order_relaxed);
+            positionInfo.isPlaying = isPlayingRt.load(std::memory_order_relaxed);
+            positionInfo.isRecording = isRecordingRt.load(std::memory_order_relaxed);
+            positionInfo.isLooping = isLoopingRt.load(std::memory_order_relaxed);
+            positionInfo.ppqLoopStart = loopStartBeatRt.load(std::memory_order_relaxed);
+            positionInfo.ppqLoopEnd = loopEndBeatRt.load(std::memory_order_relaxed);
+            sampleRate = sampleRateRt.load(std::memory_order_relaxed);
+            samplesPerBeat = samplesPerBeatRt.load(std::memory_order_relaxed);
+            beatsPerSample = beatsPerSampleRt.load(std::memory_order_relaxed);
+            updateDerivedFieldsLocked();
         }
 
         mutable juce::CriticalSection stateLock;
@@ -375,6 +426,8 @@ namespace sampledex
         std::atomic<double> currentBeatRt { 0.0 };
         std::atomic<int64_t> currentSampleRt { 0 };
         std::atomic<double> tempoRt { 120.0 };
+        std::atomic<double> sampleRateRt { 44100.0 };
+        std::atomic<double> samplesPerBeatRt { (60.0 / 120.0) * 44100.0 };
         std::atomic<double> beatsPerSampleRt { 1.0 / ((60.0 / 120.0) * 44100.0) };
         std::atomic<bool> isPlayingRt { false };
         std::atomic<bool> isRecordingRt { false };
