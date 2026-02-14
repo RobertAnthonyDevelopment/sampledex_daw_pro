@@ -374,7 +374,7 @@ namespace sampledex
             positionInfo.timeInSamples = juce::jmax<int64_t>(0, static_cast<int64_t>(std::llround(samplePos)));
         }
 
-        void updateDerivedFieldsLocked()
+        void updateDerivedFieldsLocked() const
         {
             samplesPerBeat = (60.0 / positionInfo.bpm) * sampleRate;
             beatsPerSample = samplesPerBeat > 0.0 ? (1.0 / samplesPerBeat) : 0.0;
@@ -402,7 +402,7 @@ namespace sampledex
             sampleRateRt.store(sampleRate, std::memory_order_relaxed);
         }
 
-        void refreshFromRtLocked()
+        void refreshFromRtLocked() const
         {
             positionInfo.ppqPosition = currentBeatRt.load(std::memory_order_relaxed);
             positionInfo.timeInSamples = currentSampleRt.load(std::memory_order_relaxed);
@@ -419,10 +419,10 @@ namespace sampledex
         }
 
         mutable juce::CriticalSection stateLock;
-        juce::AudioPlayHead::CurrentPositionInfo positionInfo;
-        double sampleRate = 44100.0;
-        double samplesPerBeat = (60.0 / 120.0) * 44100.0;
-        double beatsPerSample = 1.0 / samplesPerBeat;
+        mutable juce::AudioPlayHead::CurrentPositionInfo positionInfo;
+        mutable double sampleRate = 44100.0;
+        mutable double samplesPerBeat = (60.0 / 120.0) * 44100.0;
+        mutable double beatsPerSample = 1.0 / samplesPerBeat;
         std::atomic<double> currentBeatRt { 0.0 };
         std::atomic<int64_t> currentSampleRt { 0 };
         std::atomic<double> tempoRt { 120.0 };
