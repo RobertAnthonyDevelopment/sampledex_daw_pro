@@ -2020,6 +2020,14 @@ namespace sampledex
             builtInDelayFeedbackDcBlockPrevInput = { 0.0f, 0.0f };
             builtInDelayFeedbackDcBlockPrevOutput = { 0.0f, 0.0f };
             builtInGateEnvelope = 0.0f;
+            builtInGateDetectorEnvelope = 0.0f;
+            builtInGateOpen = false;
+            builtInDelaySmoothedTimeSamples = juce::jlimit(1.0f,
+                                                            static_cast<float>(builtInDelayBuffer.getNumSamples() - 2),
+                                                            builtInDelayTimeMs.load(std::memory_order_relaxed)
+                                                                * 0.001f
+                                                                * static_cast<float>(safeSampleRate));
+            builtInDelaySmoothedMix = juce::jlimit(0.0f, 1.0f, builtInDelayMix.load(std::memory_order_relaxed));
             builtInSaturationSmoothedDrive = targetDriveForReset();
             builtInSaturationSmoothedMix = targetMixForReset();
             builtInSaturationDcPrevInput = { 0.0f, 0.0f };
@@ -2044,10 +2052,14 @@ namespace sampledex
             const float thresholdGain = juce::Decibels::decibelsToGain(
                 builtInGateThresholdDb.load(std::memory_order_relaxed));
             const double sr = juce::jmax(8000.0, builtInDelayLastSampleRate);
+            const float hysteresisCloseGain = thresholdGain * 0.75f;
+            const float minAttenuationGain = juce::Decibels::decibelsToGain(-36.0f);
             const float attackMs = juce::jlimit(0.1f, 80.0f, builtInGateAttackMs.load(std::memory_order_relaxed));
             const float releaseMs = juce::jlimit(5.0f, 400.0f, builtInGateReleaseMs.load(std::memory_order_relaxed));
             const float attackCoeff = std::exp(-1.0f / static_cast<float>(0.001 * attackMs * sr));
             const float releaseCoeff = std::exp(-1.0f / static_cast<float>(0.001 * releaseMs * sr));
+            const float detectorAttackCoeff = std::exp(-1.0f / static_cast<float>(0.001 * 0.8 * sr));
+            const float detectorReleaseCoeff = std::exp(-1.0f / static_cast<float>(0.001 * 16.0 * sr));
 
             auto* left = buffer.getWritePointer(0);
             auto* right = channels > 1 ? buffer.getWritePointer(1) : nullptr;
@@ -2055,21 +2067,33 @@ namespace sampledex
                 return;
 
             float env = builtInGateEnvelope;
+            float detectorEnv = builtInGateDetectorEnvelope;
+            bool gateOpen = builtInGateOpen;
             for (int i = 0; i < samples; ++i)
             {
                 const float inL = std::abs(left[i]);
                 const float inR = right != nullptr ? std::abs(right[i]) : inL;
                 const float detector = juce::jmax(inL, inR);
-                const float target = detector >= thresholdGain ? 1.0f : 0.0f;
+                const float detectorCoeff = detector > detectorEnv ? detectorAttackCoeff : detectorReleaseCoeff;
+                detectorEnv = ((1.0f - detectorCoeff) * detector) + (detectorCoeff * detectorEnv);
+
+                if (gateOpen)
+                    gateOpen = detectorEnv >= hysteresisCloseGain;
+                else
+                    gateOpen = detectorEnv >= thresholdGain;
+
+                const float target = gateOpen ? 1.0f : 0.0f;
                 const float coeff = target > env ? attackCoeff : releaseCoeff;
                 env = ((1.0f - coeff) * target) + (coeff * env);
-                const float gateGain = env * env;
+                const float gateGain = minAttenuationGain + ((1.0f - minAttenuationGain) * (env * env));
 
                 left[i] *= gateGain;
                 if (right != nullptr)
                     right[i] *= gateGain;
             }
             builtInGateEnvelope = juce::jlimit(0.0f, 1.0f, env);
+            builtInGateDetectorEnvelope = juce::jmax(0.0f, detectorEnv);
+            builtInGateOpen = gateOpen;
         }
 
         void applyBuiltInSaturationLocked(juce::AudioBuffer<float>& buffer, int channels, int samples)
@@ -2112,7 +2136,10 @@ namespace sampledex
                     const float safeDrive = juce::jmax(1.0e-4f, channelDrive);
                     const float normalise = 1.0f / std::tanh(safeDrive);
                     const float wet = std::tanh(dcRemoved * safeDrive) * normalise;
-                    write[i] = dry + ((wet - dry) * juce::jlimit(0.0f, 1.0f, channelMix));
+                    const float mixAmount = juce::jlimit(0.0f, 1.0f, channelMix);
+                    const float dryMix = std::cos(mixAmount * juce::MathConstants<float>::halfPi);
+                    const float wetMix = std::sin(mixAmount * juce::MathConstants<float>::halfPi);
+                    write[i] = (dry * dryMix) + (wet * wetMix);
                 }
 
                 builtInSaturationDcPrevInput[static_cast<size_t>(ch)] = prevInput;
@@ -2137,11 +2164,13 @@ namespace sampledex
                                                     delayMs * 0.001f * static_cast<float>(sr));
             const float feedback = juce::jlimit(0.0f, 0.95f, builtInDelayFeedback.load(std::memory_order_relaxed));
             const float mix = juce::jlimit(0.0f, 1.0f, builtInDelayMix.load(std::memory_order_relaxed));
-            if (mix <= 0.0001f)
+            if (mix <= 0.0001f && builtInDelaySmoothedMix <= 0.0001f)
                 return;
 
-            const float dryGain = 1.0f - mix;
-            const float wetGain = mix;
+            float smoothedDelaySamples = builtInDelaySmoothedTimeSamples;
+            float smoothedMix = builtInDelaySmoothedMix;
+            const float delayStep = (delaySamples - smoothedDelaySamples) / static_cast<float>(samples);
+            const float mixStep = (mix - smoothedMix) / static_cast<float>(samples);
 
             const float lowpassCutoffHz = 9000.0f;
             const float lowpassAlpha = 1.0f - std::exp(-juce::MathConstants<float>::twoPi
@@ -2162,7 +2191,13 @@ namespace sampledex
 
             for (int i = 0; i < samples; ++i)
             {
-                float readIndex = static_cast<float>(writePos) - delaySamples;
+                smoothedDelaySamples += delayStep;
+                smoothedMix += mixStep;
+                const float clampedMix = juce::jlimit(0.0f, 1.0f, smoothedMix);
+                const float dryGain = 1.0f - clampedMix;
+                const float wetGain = clampedMix;
+
+                float readIndex = static_cast<float>(writePos) - smoothedDelaySamples;
                 while (readIndex < 0.0f)
                     readIndex += static_cast<float>(builtInDelayBuffer.getNumSamples());
 
@@ -2204,6 +2239,10 @@ namespace sampledex
             }
 
             builtInDelayWritePosition = writePos;
+            builtInDelaySmoothedTimeSamples = juce::jlimit(1.0f,
+                                                           static_cast<float>(builtInDelayBuffer.getNumSamples() - 2),
+                                                           smoothedDelaySamples);
+            builtInDelaySmoothedMix = juce::jlimit(0.0f, 1.0f, smoothedMix);
         }
 
         void applyBuiltInEffectsLocked(juce::AudioBuffer<float>& buffer, int samples)
@@ -2573,7 +2612,11 @@ namespace sampledex
         std::array<float, 2> builtInDelayFeedbackLowpassState { 0.0f, 0.0f };
         std::array<float, 2> builtInDelayFeedbackDcBlockPrevInput { 0.0f, 0.0f };
         std::array<float, 2> builtInDelayFeedbackDcBlockPrevOutput { 0.0f, 0.0f };
+        float builtInDelaySmoothedTimeSamples = 1.0f;
+        float builtInDelaySmoothedMix = 0.0f;
         float builtInGateEnvelope = 0.0f;
+        float builtInGateDetectorEnvelope = 0.0f;
+        bool builtInGateOpen = false;
 
         std::atomic<bool> frozenPlaybackOnly { false };
         juce::String frozenRenderPath;
