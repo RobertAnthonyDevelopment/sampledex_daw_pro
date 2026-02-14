@@ -8621,8 +8621,9 @@ namespace sampledex
             writerOptions = writerOptions.withSampleRate(sampleRate)
                                          .withNumChannels(2)
                                          .withBitsPerSample(24);
-            auto* rawWriter = wavFormat.createWriterFor(fileOutput.release(), writerOptions);
-            if (rawWriter == nullptr)
+            std::unique_ptr<juce::OutputStream> outputStream(std::move(fileOutput));
+            auto writer = wavFormat.createWriterFor(outputStream, writerOptions);
+            if (writer == nullptr)
             {
                 take.file.deleteFile();
                 take.writeErrorMessage = "Unable to create WAV writer for recording take.";
@@ -8630,7 +8631,7 @@ namespace sampledex
                 continue;
             }
 
-            take.writer.reset(rawWriter);
+            take.writer = std::move(writer);
             take.ringLeft.assign(static_cast<size_t>(ringCapacitySamples), 0.0f);
             take.ringRight.assign(static_cast<size_t>(ringCapacitySamples), 0.0f);
             take.ringFifo = std::make_unique<juce::AbstractFifo>(ringCapacitySamples);
