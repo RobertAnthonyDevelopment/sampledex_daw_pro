@@ -90,7 +90,7 @@ namespace sampledex
             }
 
             juce::XmlElement root("SAMPLEDEX_PROJECT");
-            root.setAttribute("version", "2.3.0");
+            root.setAttribute("version", "2.4.0");
             root.setAttribute("bpm", project.bpm);
             root.setAttribute("keyRoot", project.keyRoot);
             root.setAttribute("scaleMode", project.scaleMode);
@@ -241,6 +241,51 @@ namespace sampledex
                         c->setAttribute("beat", cc.beat);
                         c->setAttribute("controller", cc.controller);
                         c->setAttribute("value", static_cast<int>(cc.value));
+                    }
+
+                    auto* pitchXml = cXml->createNewChildElement("PITCH_BEND");
+                    for (const auto& bend : clip.pitchBendEvents)
+                    {
+                        auto* b = pitchXml->createNewChildElement("PBEV");
+                        b->setAttribute("beat", bend.beat);
+                        b->setAttribute("value", bend.value);
+                    }
+
+                    auto* channelPressureXml = cXml->createNewChildElement("CHANNEL_PRESSURE");
+                    for (const auto& pressure : clip.channelPressureEvents)
+                    {
+                        auto* p = channelPressureXml->createNewChildElement("CPEV");
+                        p->setAttribute("beat", pressure.beat);
+                        p->setAttribute("pressure", static_cast<int>(pressure.pressure));
+                    }
+
+                    auto* polyAftertouchXml = cXml->createNewChildElement("POLY_AFTERTOUCH");
+                    for (const auto& aftertouch : clip.polyAftertouchEvents)
+                    {
+                        auto* p = polyAftertouchXml->createNewChildElement("PAEV");
+                        p->setAttribute("beat", aftertouch.beat);
+                        p->setAttribute("note", aftertouch.noteNumber);
+                        p->setAttribute("pressure", static_cast<int>(aftertouch.pressure));
+                    }
+
+                    auto* programXml = cXml->createNewChildElement("PROGRAM_CHANGES");
+                    for (const auto& program : clip.programChangeEvents)
+                    {
+                        auto* p = programXml->createNewChildElement("PGEV");
+                        p->setAttribute("beat", program.beat);
+                        p->setAttribute("bankMsb", program.bankMsb);
+                        p->setAttribute("bankLsb", program.bankLsb);
+                        p->setAttribute("program", program.program);
+                    }
+
+                    auto* rawXml = cXml->createNewChildElement("RAW_MIDI");
+                    for (const auto& raw : clip.rawEvents)
+                    {
+                        auto* r = rawXml->createNewChildElement("RAWEV");
+                        r->setAttribute("beat", raw.beat);
+                        r->setAttribute("status", static_cast<int>(raw.status));
+                        r->setAttribute("data1", static_cast<int>(raw.data1));
+                        r->setAttribute("data2", static_cast<int>(raw.data2));
                     }
                 }
             }
@@ -533,6 +578,81 @@ namespace sampledex
                                 cc.controller = juce::jlimit(0, 127, ccEvent->getIntAttribute("controller", 1));
                                 cc.value = static_cast<uint8_t>(juce::jlimit(0, 127, ccEvent->getIntAttribute("value", 0)));
                                 clip.ccEvents.push_back(cc);
+                            }
+                        }
+
+                        if (auto* pitchXml = cXml->getChildByName("PITCH_BEND"))
+                        {
+                            for (auto* bendXml = pitchXml->getFirstChildElement(); bendXml != nullptr; bendXml = bendXml->getNextElement())
+                            {
+                                if (!bendXml->hasTagName("PBEV"))
+                                    continue;
+
+                                MidiPitchBendEvent bend;
+                                bend.beat = juce::jmax(0.0, bendXml->getDoubleAttribute("beat", 0.0));
+                                bend.value = juce::jlimit(0, 16383, bendXml->getIntAttribute("value", 8192));
+                                clip.pitchBendEvents.push_back(bend);
+                            }
+                        }
+
+                        if (auto* channelPressureXml = cXml->getChildByName("CHANNEL_PRESSURE"))
+                        {
+                            for (auto* pressureXml = channelPressureXml->getFirstChildElement(); pressureXml != nullptr; pressureXml = pressureXml->getNextElement())
+                            {
+                                if (!pressureXml->hasTagName("CPEV"))
+                                    continue;
+
+                                MidiChannelPressureEvent pressure;
+                                pressure.beat = juce::jmax(0.0, pressureXml->getDoubleAttribute("beat", 0.0));
+                                pressure.pressure = static_cast<uint8_t>(juce::jlimit(0, 127, pressureXml->getIntAttribute("pressure", 0)));
+                                clip.channelPressureEvents.push_back(pressure);
+                            }
+                        }
+
+                        if (auto* polyAftertouchXml = cXml->getChildByName("POLY_AFTERTOUCH"))
+                        {
+                            for (auto* polyXml = polyAftertouchXml->getFirstChildElement(); polyXml != nullptr; polyXml = polyXml->getNextElement())
+                            {
+                                if (!polyXml->hasTagName("PAEV"))
+                                    continue;
+
+                                MidiPolyAftertouchEvent poly;
+                                poly.beat = juce::jmax(0.0, polyXml->getDoubleAttribute("beat", 0.0));
+                                poly.noteNumber = juce::jlimit(0, 127, polyXml->getIntAttribute("note", 60));
+                                poly.pressure = static_cast<uint8_t>(juce::jlimit(0, 127, polyXml->getIntAttribute("pressure", 0)));
+                                clip.polyAftertouchEvents.push_back(poly);
+                            }
+                        }
+
+                        if (auto* programXml = cXml->getChildByName("PROGRAM_CHANGES"))
+                        {
+                            for (auto* programEventXml = programXml->getFirstChildElement(); programEventXml != nullptr; programEventXml = programEventXml->getNextElement())
+                            {
+                                if (!programEventXml->hasTagName("PGEV"))
+                                    continue;
+
+                                MidiProgramChangeEvent program;
+                                program.beat = juce::jmax(0.0, programEventXml->getDoubleAttribute("beat", 0.0));
+                                program.bankMsb = juce::jlimit(-1, 127, programEventXml->getIntAttribute("bankMsb", -1));
+                                program.bankLsb = juce::jlimit(-1, 127, programEventXml->getIntAttribute("bankLsb", -1));
+                                program.program = juce::jlimit(-1, 127, programEventXml->getIntAttribute("program", -1));
+                                clip.programChangeEvents.push_back(program);
+                            }
+                        }
+
+                        if (auto* rawXml = cXml->getChildByName("RAW_MIDI"))
+                        {
+                            for (auto* rawEventXml = rawXml->getFirstChildElement(); rawEventXml != nullptr; rawEventXml = rawEventXml->getNextElement())
+                            {
+                                if (!rawEventXml->hasTagName("RAWEV"))
+                                    continue;
+
+                                MidiRawEvent raw;
+                                raw.beat = juce::jmax(0.0, rawEventXml->getDoubleAttribute("beat", 0.0));
+                                raw.status = static_cast<uint8_t>(juce::jlimit(0, 255, rawEventXml->getIntAttribute("status", 0x90)));
+                                raw.data1 = static_cast<uint8_t>(juce::jlimit(0, 127, rawEventXml->getIntAttribute("data1", 0)));
+                                raw.data2 = static_cast<uint8_t>(juce::jlimit(0, 127, rawEventXml->getIntAttribute("data2", 0)));
+                                clip.rawEvents.push_back(raw);
                             }
                         }
                     }

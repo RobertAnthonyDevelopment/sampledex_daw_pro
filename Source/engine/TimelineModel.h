@@ -35,6 +35,68 @@ namespace sampledex
         }
     };
 
+    struct MidiPitchBendEvent
+    {
+        double beat = 0.0;
+        int value = 8192; // 14-bit MIDI pitch wheel value (0..16383), center=8192
+
+        bool operator==(const MidiPitchBendEvent& other) const
+        {
+            return std::tie(beat, value) == std::tie(other.beat, other.value);
+        }
+    };
+
+    struct MidiChannelPressureEvent
+    {
+        double beat = 0.0;
+        uint8_t pressure = 0;
+
+        bool operator==(const MidiChannelPressureEvent& other) const
+        {
+            return std::tie(beat, pressure) == std::tie(other.beat, other.pressure);
+        }
+    };
+
+    struct MidiPolyAftertouchEvent
+    {
+        double beat = 0.0;
+        int noteNumber = 60;
+        uint8_t pressure = 0;
+
+        bool operator==(const MidiPolyAftertouchEvent& other) const
+        {
+            return std::tie(beat, noteNumber, pressure) == std::tie(other.beat, other.noteNumber, other.pressure);
+        }
+    };
+
+    struct MidiProgramChangeEvent
+    {
+        double beat = 0.0;
+        int bankMsb = -1; // -1 means no bank MSB update
+        int bankLsb = -1; // -1 means no bank LSB update
+        int program = -1; // -1 means no program update
+
+        bool operator==(const MidiProgramChangeEvent& other) const
+        {
+            return std::tie(beat, bankMsb, bankLsb, program)
+                == std::tie(other.beat, other.bankMsb, other.bankLsb, other.program);
+        }
+    };
+
+    struct MidiRawEvent
+    {
+        double beat = 0.0;
+        uint8_t status = 0x90;
+        uint8_t data1 = 0;
+        uint8_t data2 = 0;
+
+        bool operator==(const MidiRawEvent& other) const
+        {
+            return std::tie(beat, status, data1, data2)
+                == std::tie(other.beat, other.status, other.data1, other.data2);
+        }
+    };
+
     enum class AutomationTarget : int
     {
         TrackVolume = 0,
@@ -114,6 +176,11 @@ namespace sampledex
         // MIDI Content
         std::vector<TimelineEvent> events;
         std::vector<MidiCCEvent> ccEvents;
+        std::vector<MidiPitchBendEvent> pitchBendEvents;
+        std::vector<MidiChannelPressureEvent> channelPressureEvents;
+        std::vector<MidiPolyAftertouchEvent> polyAftertouchEvents;
+        std::vector<MidiProgramChangeEvent> programChangeEvents;
+        std::vector<MidiRawEvent> rawEvents;
         
         // Audio Content (RAM Cache)
         // We use shared_ptr so we can pass this around efficiently without copying heavy audio data
@@ -142,6 +209,11 @@ namespace sampledex
                             trackIndex,
                             events,
                             ccEvents,
+                            pitchBendEvents,
+                            channelPressureEvents,
+                            polyAftertouchEvents,
+                            programChangeEvents,
+                            rawEvents,
                             audioData,
                             audioFilePath,
                             audioSampleRate,
@@ -164,6 +236,11 @@ namespace sampledex
                             other.trackIndex,
                             other.events,
                             other.ccEvents,
+                            other.pitchBendEvents,
+                            other.channelPressureEvents,
+                            other.polyAftertouchEvents,
+                            other.programChangeEvents,
+                            other.rawEvents,
                             other.audioData,
                             other.audioFilePath,
                             other.audioSampleRate,
@@ -238,6 +315,67 @@ namespace sampledex
                                   beatToSample(ccAbsBeat));
                 }
             }
+
+            for (const auto& bend : pitchBendEvents)
+            {
+                const double absBeat = startBeat + bend.beat - offsetBeats;
+                if (absBeat >= fromBeat && absBeat < toBeat)
+                {
+                    dest.addEvent(juce::MidiMessage::pitchWheel(channel, juce::jlimit(0, 16383, bend.value)),
+                                  beatToSample(absBeat));
+                }
+            }
+
+            for (const auto& pressure : channelPressureEvents)
+            {
+                const double absBeat = startBeat + pressure.beat - offsetBeats;
+                if (absBeat >= fromBeat && absBeat < toBeat)
+                {
+                    dest.addEvent(juce::MidiMessage::channelPressureChange(channel, pressure.pressure),
+                                  beatToSample(absBeat));
+                }
+            }
+
+            for (const auto& poly : polyAftertouchEvents)
+            {
+                const double absBeat = startBeat + poly.beat - offsetBeats;
+                if (absBeat >= fromBeat && absBeat < toBeat)
+                {
+                    const int note = juce::jlimit(0, 127, poly.noteNumber + transpose);
+                    dest.addEvent(juce::MidiMessage::aftertouchChange(channel, note, poly.pressure),
+                                  beatToSample(absBeat));
+                }
+            }
+
+            for (const auto& program : programChangeEvents)
+            {
+                const double absBeat = startBeat + program.beat - offsetBeats;
+                if (absBeat < fromBeat || absBeat >= toBeat)
+                    continue;
+
+                const int sampleOffset = beatToSample(absBeat);
+                if (program.bankMsb >= 0)
+                    dest.addEvent(juce::MidiMessage::controllerEvent(channel, 0, juce::jlimit(0, 127, program.bankMsb)),
+                                  sampleOffset);
+                if (program.bankLsb >= 0)
+                    dest.addEvent(juce::MidiMessage::controllerEvent(channel, 32, juce::jlimit(0, 127, program.bankLsb)),
+                                  sampleOffset);
+                if (program.program >= 0)
+                    dest.addEvent(juce::MidiMessage::programChange(channel, juce::jlimit(0, 127, program.program)),
+                                  sampleOffset);
+            }
+
+            for (const auto& raw : rawEvents)
+            {
+                const double absBeat = startBeat + raw.beat - offsetBeats;
+                if (absBeat >= fromBeat && absBeat < toBeat)
+                {
+                    dest.addEvent(juce::MidiMessage(static_cast<int>(raw.status),
+                                                    static_cast<int>(raw.data1),
+                                                    static_cast<int>(raw.data2)),
+                                  beatToSample(absBeat));
+                }
+            }
         }
     };
 
@@ -305,10 +443,57 @@ namespace sampledex
                 }
             }
 
+            auto splitByBeat = [splitLocalBeat](auto& source, auto& leftOut, auto& rightOut)
+            {
+                leftOut.reserve(source.size());
+                rightOut.reserve(source.size());
+                for (const auto& event : source)
+                {
+                    if (event.beat < splitLocalBeat)
+                        leftOut.push_back(event);
+                    else
+                    {
+                        auto shifted = event;
+                        shifted.beat = juce::jmax(0.0, shifted.beat - splitLocalBeat);
+                        rightOut.push_back(shifted);
+                    }
+                }
+            };
+
+            std::vector<MidiPitchBendEvent> leftPitch;
+            std::vector<MidiPitchBendEvent> rightPitch;
+            splitByBeat(left.pitchBendEvents, leftPitch, rightPitch);
+
+            std::vector<MidiChannelPressureEvent> leftChannelPressure;
+            std::vector<MidiChannelPressureEvent> rightChannelPressure;
+            splitByBeat(left.channelPressureEvents, leftChannelPressure, rightChannelPressure);
+
+            std::vector<MidiPolyAftertouchEvent> leftPoly;
+            std::vector<MidiPolyAftertouchEvent> rightPoly;
+            splitByBeat(left.polyAftertouchEvents, leftPoly, rightPoly);
+
+            std::vector<MidiProgramChangeEvent> leftProgram;
+            std::vector<MidiProgramChangeEvent> rightProgram;
+            splitByBeat(left.programChangeEvents, leftProgram, rightProgram);
+
+            std::vector<MidiRawEvent> leftRaw;
+            std::vector<MidiRawEvent> rightRaw;
+            splitByBeat(left.rawEvents, leftRaw, rightRaw);
+
             left.events = std::move(leftEvents);
             left.ccEvents = std::move(leftCC);
             rightOut.events = std::move(rightEvents);
             rightOut.ccEvents = std::move(rightCC);
+            left.pitchBendEvents = std::move(leftPitch);
+            rightOut.pitchBendEvents = std::move(rightPitch);
+            left.channelPressureEvents = std::move(leftChannelPressure);
+            rightOut.channelPressureEvents = std::move(rightChannelPressure);
+            left.polyAftertouchEvents = std::move(leftPoly);
+            rightOut.polyAftertouchEvents = std::move(rightPoly);
+            left.programChangeEvents = std::move(leftProgram);
+            rightOut.programChangeEvents = std::move(rightProgram);
+            left.rawEvents = std::move(leftRaw);
+            rightOut.rawEvents = std::move(rightRaw);
             return true;
         }
 
