@@ -5901,7 +5901,17 @@ namespace sampledex
         if (outputSafetyMuteBlocks > 0)
         {
             bufferToFill.clearActiveBufferRegion();
-            outputSafetyMuteBlocksRt.store(outputSafetyMuteBlocks - 1, std::memory_order_relaxed);
+            const int nextMuteBlocks = outputSafetyMuteBlocks - 1;
+            outputSafetyMuteBlocksRt.store(nextMuteBlocks, std::memory_order_relaxed);
+            if (nextMuteBlocks == 0)
+            {
+                const int releaseRampSamples = juce::jmax(128, bufferToFill.numSamples * 3);
+                startupOutputRampTotalSamplesRt.store(releaseRampSamples, std::memory_order_relaxed);
+                startupOutputRampSamplesRemainingRt.store(releaseRampSamples, std::memory_order_relaxed);
+                startupSafetyRampLoggedRt.store(false, std::memory_order_relaxed);
+            }
+            outputDcPrevInput = { 0.0f, 0.0f };
+            outputDcPrevOutput = { 0.0f, 0.0f };
             masterPeakMeterRt.store(masterPeakMeterRt.load(std::memory_order_relaxed) * 0.86f, std::memory_order_relaxed);
             masterRmsMeterRt.store(masterRmsMeterRt.load(std::memory_order_relaxed) * 0.82f, std::memory_order_relaxed);
             return;
@@ -7028,6 +7038,10 @@ namespace sampledex
             outputSafetyMuteBlocksRt.store(juce::jmax(currentMuteBlocks, 96), std::memory_order_relaxed);
             const int currentGuard = startupSafetyBlocksRemainingRt.load(std::memory_order_relaxed);
             startupSafetyBlocksRemainingRt.store(juce::jmax(currentGuard, 24), std::memory_order_relaxed);
+            const int recoveryRampSamples = juce::jmax(256, bufferToFill.numSamples * 4);
+            startupOutputRampTotalSamplesRt.store(recoveryRampSamples, std::memory_order_relaxed);
+            startupOutputRampSamplesRemainingRt.store(recoveryRampSamples, std::memory_order_relaxed);
+            startupSafetyRampLoggedRt.store(false, std::memory_order_relaxed);
         }
 
         float masterPeak = 0.0f;
