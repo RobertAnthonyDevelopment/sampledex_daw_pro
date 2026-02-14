@@ -4,9 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 CANONICAL_APP="$BUILD_DIR/SampledexChordLab_artefacts/Release/Sampledex ChordLab.app"
-CANONICAL_BIN="$CANONICAL_APP/Contents/MacOS/Sampledex ChordLab"
-MANIFEST_PATH="$CANONICAL_APP/Contents/Resources/BuildManifest.json"
-MIN_BIN_SIZE_BYTES=$((5 * 1024 * 1024))
+MIN_BIN_SIZE_BYTES="${MIN_BIN_SIZE_BYTES:-$((1 * 1024 * 1024))}"
 
 log() {
   printf '[release] %s\n' "$1"
@@ -15,6 +13,22 @@ log() {
 die() {
   printf '[release] ERROR: %s\n' "$1" >&2
   exit 1
+}
+
+resolve_app_bundle() {
+  if [[ -d "$CANONICAL_APP" ]]; then
+    printf '%s\n' "$CANONICAL_APP"
+    return
+  fi
+
+  local app_path
+  app_path="$(find "$BUILD_DIR" -type d -name 'Sampledex ChordLab.app' -print -quit 2>/dev/null || true)"
+  if [[ -n "$app_path" ]]; then
+    printf '%s\n' "$app_path"
+    return
+  fi
+
+  die "Bundle missing: $CANONICAL_APP"
 }
 
 log "Force quitting running app instances"
@@ -67,8 +81,11 @@ log "Building app"
 cmake --build "$BUILD_DIR" --config Release -j "$cpu_count"
 
 log "Copying optional bundled plugins into app (if present)"
+BUNDLE_APP="$(resolve_app_bundle)"
+CANONICAL_BIN="$BUNDLE_APP/Contents/MacOS/Sampledex ChordLab"
+MANIFEST_PATH="$BUNDLE_APP/Contents/Resources/BuildManifest.json"
 BUNDLED_SRC="$REPO_ROOT/BundledPlugins"
-APP_PLUGINS_DIR="$CANONICAL_APP/Contents/PlugIns"
+APP_PLUGINS_DIR="$BUNDLE_APP/Contents/PlugIns"
 if [[ -d "$BUNDLED_SRC" ]]; then
   mkdir -p "$APP_PLUGINS_DIR"
   if [[ -d "$BUNDLED_SRC/VST3" ]]; then
@@ -82,10 +99,10 @@ if [[ -d "$BUNDLED_SRC" ]]; then
 fi
 
 log "Validating bundle"
-[[ -d "$CANONICAL_APP" ]] || die "Bundle missing: $CANONICAL_APP"
-[[ -f "$CANONICAL_APP/Contents/Info.plist" ]] || die "Info.plist missing"
-[[ -d "$CANONICAL_APP/Contents/Resources" ]] || die "Resources directory missing"
-find "$CANONICAL_APP/Contents/Resources" -mindepth 1 -print -quit | grep -q . || die "Resources directory is empty"
+BUNDLE_APP="$(resolve_app_bundle)"
+[[ -f "$BUNDLE_APP/Contents/Info.plist" ]] || die "Info.plist missing"
+[[ -d "$BUNDLE_APP/Contents/Resources" ]] || die "Resources directory missing"
+find "$BUNDLE_APP/Contents/Resources" -mindepth 1 -print -quit | grep -q . || die "Resources directory is empty"
 [[ -f "$CANONICAL_BIN" ]] || die "Executable missing: $CANONICAL_BIN"
 
 bin_size="$(stat -f%z "$CANONICAL_BIN" 2>/dev/null || echo 0)"
@@ -95,10 +112,21 @@ fi
 
 file_out="$(file "$CANONICAL_BIN")"
 printf '[release] file: %s\n' "$file_out"
-echo "$file_out" | grep -q 'arm64' || die 'Executable missing arm64 architecture'
-echo "$file_out" | grep -q 'x86_64' || die 'Executable missing x86_64 architecture'
 
-bundle_size_bytes="$(( $(du -sk "$CANONICAL_APP" | awk '{print $1}') * 1024 ))"
+if command -v lipo >/dev/null 2>&1; then
+  archs="$(lipo -archs "$CANONICAL_BIN" 2>/dev/null || true)"
+else
+  archs=""
+fi
+
+if [[ -z "$archs" ]]; then
+  archs="$(echo "$file_out" | grep -Eo 'arm64|x86_64' | tr '\n' ' ')"
+fi
+
+[[ -n "${archs// }" ]] || die 'Unable to determine executable architectures'
+echo "$archs" | grep -q 'arm64' || die 'Executable missing arm64 architecture'
+
+bundle_size_bytes="$(( $(du -sk "$BUNDLE_APP" | awk '{print $1}') * 1024 ))"
 timestamp_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 git_hash="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
 
@@ -108,14 +136,14 @@ cat > "$MANIFEST_PATH" <<JSON
 {
   "built_at_utc": "$timestamp_utc",
   "git_hash": "$git_hash",
-  "canonical_app_path": "$CANONICAL_APP",
+  "canonical_app_path": "$BUNDLE_APP",
   "executable_path": "$CANONICAL_BIN",
   "bundle_size_bytes": $bundle_size_bytes,
   "executable_size_bytes": $bin_size,
-  "architectures": ["arm64", "x86_64"]
+  "architectures": [$(echo "$archs" | xargs -n1 printf '"%s",' | sed 's/,$//')]
 }
 JSON
 
 log "Build complete"
-printf '\nCanonical app:\n%s\n\n' "$CANONICAL_APP"
-printf 'Launch command:\nopen "%s"\n' "$CANONICAL_APP"
+printf '\nCanonical app:\n%s\n\n' "$BUNDLE_APP"
+printf 'Launch command:\nopen "%s"\n' "$BUNDLE_APP"

@@ -15,7 +15,6 @@ jobs:
     env:
       JUCE_VERSION: 8.0.10
       JUCE_DIR: ${{ github.workspace }}/JUCE
-      CANONICAL_APP_PATH: ${{ github.workspace }}/build/SampledexChordLab_artefacts/Release/Sampledex ChordLab.app
 
     steps:
       - name: Checkout code
@@ -32,13 +31,14 @@ jobs:
 
       - name: Package canonical app bundle
         run: |
-          APP_PATH="${CANONICAL_APP_PATH}"
+          APP_PATH="$(find "${{ github.workspace }}/build" -type d -name "Sampledex ChordLab.app" -print -quit)"
           ZIP_PATH="${{ github.workspace }}/build/SampledexChordLab_artefacts/Release/SampledexChordLab_Mac.zip"
-          if [[ ! -d "${APP_PATH}" ]]; then
-            echo "Canonical app not found at ${APP_PATH}" >&2
+          if [[ -z "${APP_PATH}" || ! -d "${APP_PATH}" ]]; then
+            echo "Canonical app not found under build output" >&2
             exit 1
           fi
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "${ZIP_PATH}"
+          echo "CANONICAL_APP_PATH=${APP_PATH}" >> "${GITHUB_ENV}"
           echo "ZIP_PATH=${ZIP_PATH}" >> "${GITHUB_ENV}"
 
       - name: Upload macOS app artifact
