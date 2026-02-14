@@ -1962,6 +1962,10 @@ namespace sampledex
             builtInDelayBuffer.clear();
             builtInDelayWritePosition = 0;
             builtInDelayLastSampleRate = safeSampleRate;
+            const float initialDelayMs = juce::jlimit(5.0f, 1800.0f, builtInDelayTimeMs.load(std::memory_order_relaxed));
+            builtInDelaySmoothedSamples = juce::jlimit(1.0f,
+                                                       static_cast<float>(delayBufferSamples - 1),
+                                                       (initialDelayMs * 0.001f) * static_cast<float>(safeSampleRate));
         }
 
         void applyBuiltInGateLocked(juce::AudioBuffer<float>& buffer, int channels, int samples)
@@ -2032,9 +2036,9 @@ namespace sampledex
 
             const double sr = juce::jmax(8000.0, builtInDelayLastSampleRate);
             const float delayMs = juce::jlimit(5.0f, 1800.0f, builtInDelayTimeMs.load(std::memory_order_relaxed));
-            const int delaySamples = juce::jlimit(1,
-                                                  builtInDelayBuffer.getNumSamples() - 1,
-                                                  static_cast<int>(std::round((delayMs * 0.001f) * sr)));
+            const float targetDelaySamples = juce::jlimit(1.0f,
+                                                          static_cast<float>(builtInDelayBuffer.getNumSamples() - 1),
+                                                          (delayMs * 0.001f) * static_cast<float>(sr));
             const float feedback = juce::jlimit(0.0f, 0.95f, builtInDelayFeedback.load(std::memory_order_relaxed));
             const float mix = juce::jlimit(0.0f, 1.0f, builtInDelayMix.load(std::memory_order_relaxed));
             if (mix <= 0.0001f)
@@ -2043,12 +2047,27 @@ namespace sampledex
             int writePos = juce::jlimit(0,
                                         builtInDelayBuffer.getNumSamples() - 1,
                                         builtInDelayWritePosition);
-            int readPos = writePos - delaySamples;
-            while (readPos < 0)
-                readPos += builtInDelayBuffer.getNumSamples();
+            const int delayBufferSize = builtInDelayBuffer.getNumSamples();
+            float delaySamples = juce::jlimit(1.0f,
+                                              static_cast<float>(delayBufferSize - 1),
+                                              builtInDelaySmoothedSamples);
+            const float delayStep = (targetDelaySamples - delaySamples) / static_cast<float>(juce::jmax(1, samples));
 
             for (int i = 0; i < samples; ++i)
             {
+                delaySamples = juce::jlimit(1.0f,
+                                            static_cast<float>(delayBufferSize - 1),
+                                            delaySamples + delayStep);
+
+                const float readPosFloat = static_cast<float>(writePos) - delaySamples;
+                float wrappedReadPos = readPosFloat;
+                while (wrappedReadPos < 0.0f)
+                    wrappedReadPos += static_cast<float>(delayBufferSize);
+
+                const int readPos0 = static_cast<int>(wrappedReadPos);
+                const int readPos1 = (readPos0 + 1) % delayBufferSize;
+                const float readFrac = wrappedReadPos - static_cast<float>(readPos0);
+
                 for (int ch = 0; ch < channels; ++ch)
                 {
                     auto* write = buffer.getWritePointer(ch);
@@ -2057,18 +2076,19 @@ namespace sampledex
                         continue;
 
                     const float dry = write[i];
-                    const float delayed = delayWrite[readPos];
+                    const float delayed0 = delayWrite[readPos0];
+                    const float delayed1 = delayWrite[readPos1];
+                    const float delayed = delayed0 + ((delayed1 - delayed0) * readFrac);
                     write[i] = dry + (delayed * mix);
                     delayWrite[writePos] = juce::jlimit(-1.5f, 1.5f, dry + (delayed * feedback));
                 }
 
-                if (++writePos >= builtInDelayBuffer.getNumSamples())
+                if (++writePos >= delayBufferSize)
                     writePos = 0;
-                if (++readPos >= builtInDelayBuffer.getNumSamples())
-                    readPos = 0;
             }
 
             builtInDelayWritePosition = writePos;
+            builtInDelaySmoothedSamples = delaySamples;
         }
 
         void applyBuiltInEffectsLocked(juce::AudioBuffer<float>& buffer, int samples)
@@ -2401,6 +2421,7 @@ namespace sampledex
         juce::AudioBuffer<float> builtInDelayBuffer;
         int builtInDelayWritePosition = 0;
         double builtInDelayLastSampleRate = 44100.0;
+        float builtInDelaySmoothedSamples = 340.0f * 44.1f;
         float builtInGateEnvelope = 0.0f;
 
         std::atomic<bool> frozenPlaybackOnly { false };
