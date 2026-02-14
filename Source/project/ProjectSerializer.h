@@ -198,6 +198,23 @@ namespace sampledex
                 cXml->setAttribute("crossfadeOut", clip.crossfadeOutBeats);
                 cXml->setAttribute("audioSampleRate", clip.audioSampleRate);
                 cXml->setAttribute("detectedTempoBpm", clip.detectedTempoBpm);
+                cXml->setAttribute("stretchMode", static_cast<int>(clip.stretchMode));
+                cXml->setAttribute("originalTempoBpm", clip.originalTempoBpm);
+                cXml->setAttribute("formantPreserve", clip.formantPreserve);
+                cXml->setAttribute("oneShot", clip.oneShot);
+
+                if (!clip.warpMarkers.empty())
+                {
+                    auto* markersXml = cXml->createNewChildElement("WARP_MARKERS");
+                    for (const auto& marker : clip.warpMarkers)
+                    {
+                        auto* m = markersXml->createNewChildElement("MARKER");
+                        m->setAttribute("clipBeat", marker.clipBeat);
+                        m->setAttribute("sourceBeat", marker.sourceBeat);
+                        m->setAttribute("strength", static_cast<double>(marker.strength));
+                        m->setAttribute("transient", marker.transientAnchor);
+                    }
+                }
 
                 if (clip.type == ClipType::Audio)
                 {
@@ -435,6 +452,32 @@ namespace sampledex
                     clip.crossfadeOutBeats = juce::jmax(0.0, cXml->getDoubleAttribute("crossfadeOut", 0.0));
                     clip.audioSampleRate = juce::jmax(1.0, cXml->getDoubleAttribute("audioSampleRate", 44100.0));
                     clip.detectedTempoBpm = juce::jmax(0.0, cXml->getDoubleAttribute("detectedTempoBpm", 0.0));
+                    clip.stretchMode = static_cast<ClipStretchMode>(juce::jlimit(0, 2, cXml->getIntAttribute("stretchMode", 0)));
+                    clip.originalTempoBpm = juce::jmax(0.0, cXml->getDoubleAttribute("originalTempoBpm", 0.0));
+                    clip.formantPreserve = cXml->getBoolAttribute("formantPreserve", false);
+                    clip.oneShot = cXml->getBoolAttribute("oneShot", false);
+
+                    if (auto* markersXml = cXml->getChildByName("WARP_MARKERS"))
+                    {
+                        for (auto* markerXml = markersXml->getFirstChildElement(); markerXml != nullptr; markerXml = markerXml->getNextElement())
+                        {
+                            if (!markerXml->hasTagName("MARKER"))
+                                continue;
+
+                            WarpMarker marker;
+                            marker.clipBeat = juce::jmax(0.0, markerXml->getDoubleAttribute("clipBeat", 0.0));
+                            marker.sourceBeat = juce::jmax(0.0, markerXml->getDoubleAttribute("sourceBeat", marker.clipBeat));
+                            marker.strength = static_cast<float>(juce::jlimit(0.0, 1.0, markerXml->getDoubleAttribute("strength", 1.0)));
+                            marker.transientAnchor = markerXml->getBoolAttribute("transient", false);
+                            clip.warpMarkers.push_back(marker);
+                        }
+
+                        std::sort(clip.warpMarkers.begin(), clip.warpMarkers.end(),
+                                  [](const WarpMarker& a, const WarpMarker& b)
+                                  {
+                                      return a.clipBeat < b.clipBeat;
+                                  });
+                    }
 
                     if (clip.type == ClipType::Audio)
                     {

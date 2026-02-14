@@ -164,6 +164,135 @@ namespace
         return out;
     }
 
+
+
+    enum class ClipStretchQuality
+    {
+        Fast = 0,
+        High = 1
+    };
+
+    static inline float sampleLinear(const float* src, int srcLength, double sourcePosition) noexcept
+    {
+        if (src == nullptr || srcLength <= 0)
+            return 0.0f;
+
+        const double clamped = juce::jlimit(0.0, static_cast<double>(srcLength - 1), sourcePosition);
+        const int idxA = juce::jlimit(0, srcLength - 1, static_cast<int>(std::floor(clamped)));
+        const int idxB = juce::jlimit(0, srcLength - 1, idxA + 1);
+        const float frac = static_cast<float>(clamped - static_cast<double>(idxA));
+        return src[idxA] + ((src[idxB] - src[idxA]) * frac);
+    }
+
+    static inline float sampleForStretchQuality(const float* src,
+                                                int srcLength,
+                                                double sourcePosition,
+                                                ClipStretchQuality quality) noexcept
+    {
+        return quality == ClipStretchQuality::High
+            ? sampleBandlimited(src, srcLength, sourcePosition)
+            : sampleLinear(src, srcLength, sourcePosition);
+    }
+
+    static double mapClipBeatToSourceBeat(const Clip& clip, double clipBeat) noexcept
+    {
+        const double localBeat = juce::jmax(0.0, clipBeat);
+        if (clip.stretchMode != ClipStretchMode::BeatWarp || clip.warpMarkers.empty())
+            return localBeat;
+
+        const auto& markers = clip.warpMarkers;
+        if (markers.size() == 1)
+            return juce::jmax(0.0, markers.front().sourceBeat + (localBeat - markers.front().clipBeat));
+
+        if (localBeat <= markers.front().clipBeat)
+            return juce::jmax(0.0, markers.front().sourceBeat + (localBeat - markers.front().clipBeat));
+
+        for (size_t i = 0; i + 1 < markers.size(); ++i)
+        {
+            const auto& a = markers[i];
+            const auto& b = markers[i + 1];
+            if (localBeat <= b.clipBeat)
+            {
+                const double clipSpan = juce::jmax(1.0e-6, b.clipBeat - a.clipBeat);
+                const double sourceSpan = b.sourceBeat - a.sourceBeat;
+                const double t = juce::jlimit(0.0, 1.0, (localBeat - a.clipBeat) / clipSpan);
+                return juce::jmax(0.0, a.sourceBeat + (sourceSpan * t));
+            }
+        }
+
+        const auto& tailA = markers[markers.size() - 2];
+        const auto& tailB = markers.back();
+        const double clipSpan = juce::jmax(1.0e-6, tailB.clipBeat - tailA.clipBeat);
+        const double slope = (tailB.sourceBeat - tailA.sourceBeat) / clipSpan;
+        return juce::jmax(0.0, tailB.sourceBeat + ((localBeat - tailB.clipBeat) * slope));
+    }
+
+    static std::vector<WarpMarker> detectTransientWarpMarkers(juce::AudioFormatReader& reader,
+                                                               double clipLengthBeats,
+                                                               int maxMarkers = 24)
+    {
+        std::vector<WarpMarker> markers;
+        if (reader.lengthInSamples <= 0 || reader.numChannels <= 0 || clipLengthBeats <= 0.0)
+            return markers;
+
+        constexpr int analysisHop = 512;
+        constexpr int analysisWindow = 1024;
+        const int64 totalSamples = reader.lengthInSamples;
+        juce::AudioBuffer<float> analysisBuffer(static_cast<int>(reader.numChannels), analysisWindow);
+        double previousEnergy = 0.0;
+        bool first = true;
+
+        struct Candidate { double beat = 0.0; double score = 0.0; };
+        std::vector<Candidate> candidates;
+
+        for (int64 pos = 0; pos < totalSamples; pos += analysisHop)
+        {
+            const int block = static_cast<int>(juce::jmin<int64>(analysisWindow, totalSamples - pos));
+            if (block <= 0)
+                break;
+
+            analysisBuffer.clear();
+            if (!reader.read(&analysisBuffer, 0, block, pos, true, true))
+                break;
+
+            double energy = 0.0;
+            for (int ch = 0; ch < analysisBuffer.getNumChannels(); ++ch)
+            {
+                const float* src = analysisBuffer.getReadPointer(ch);
+                for (int i = 0; i < block; ++i)
+                    energy += std::abs(src[i]);
+            }
+            energy /= juce::jmax(1.0, static_cast<double>(block * analysisBuffer.getNumChannels()));
+
+            if (!first)
+            {
+                const double onset = energy - previousEnergy;
+                if (onset > 0.015)
+                {
+                    const double norm = juce::jlimit(0.0, 1.0, onset * 10.0);
+                    const double beat = (static_cast<double>(pos) / static_cast<double>(totalSamples)) * clipLengthBeats;
+                    candidates.push_back({ beat, norm });
+                }
+            }
+
+            first = false;
+            previousEnergy = (previousEnergy * 0.65) + (energy * 0.35);
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b){ return a.score > b.score; });
+        if (static_cast<int>(candidates.size()) > maxMarkers)
+            candidates.resize(static_cast<size_t>(maxMarkers));
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b){ return a.beat < b.beat; });
+
+        markers.push_back({ 0.0, 0.0, 1.0f, true });
+        for (const auto& c : candidates)
+            markers.push_back({ c.beat, c.beat, static_cast<float>(c.score), true });
+        markers.push_back({ clipLengthBeats, clipLengthBeats, 1.0f, true });
+
+        std::sort(markers.begin(), markers.end(), [](const WarpMarker& a, const WarpMarker& b){ return a.clipBeat < b.clipBeat; });
+        markers.erase(std::unique(markers.begin(), markers.end(), [](const WarpMarker& a, const WarpMarker& b){ return std::abs(a.clipBeat - b.clipBeat) < 1.0e-4; }), markers.end());
+        return markers;
+    }
     static inline float applyMicroFadeWindow(double beatInClip,
                                              double clipLengthBeats,
                                              double beatsPerSample,
@@ -6608,19 +6737,40 @@ namespace sampledex
                     if (targetNumSamples <= 0)
                         continue;
 
-                    const double sourceStartBeat = (segmentStartBeat - clip.startBeat) + clip.offsetBeats;
+                    const bool offlineStretchQuality = offlineRenderActiveRt.load(std::memory_order_relaxed);
+                    const ClipStretchQuality stretchQuality = offlineStretchQuality
+                        ? ClipStretchQuality::High
+                        : ClipStretchQuality::Fast;
                     const double sourceSampleRate = hasDiskStream
                         ? juce::jmax(1.0, clipStream->getSampleRate())
                         : juce::jmax(1.0, clip.audioSampleRate);
-                    double sourcePosition = juce::jmax(0.0, sourceStartBeat * secondsPerBeat * sourceSampleRate);
-                    const double sourceIncrement = sourceSampleRate / juce::jmax(1.0, sampleRate);
+                                        const double beatStep = bpmValue / (60.0 * juce::jmax(1.0, sampleRate));
+                    const double clipStartOffsetBeat = segmentStartBeat - clip.startBeat;
+                    const double sourceTempoBpm = juce::jmax(1.0,
+                                                             clip.originalTempoBpm > 0.0 ? clip.originalTempoBpm
+                                                                                         : (clip.detectedTempoBpm > 0.0 ? clip.detectedTempoBpm
+                                                                                                                 : bpmValue));
+                    const double sourceSecondsPerBeat = 60.0 / sourceTempoBpm;
+                    const double sourceSamplesPerBeat = sourceSecondsPerBeat * sourceSampleRate;
+                    auto sourcePositionForClipBeat = [&](double beatInClip)
+                    {
+                        const double clipBeatWithOffset = juce::jmax(0.0, beatInClip + clip.offsetBeats);
+                        if (clip.oneShot || clip.stretchMode == ClipStretchMode::OneShot)
+                            return clip.offsetBeats * sourceSamplesPerBeat + (beatInClip * secondsPerBeat * sourceSampleRate);
+
+                        if (clip.stretchMode == ClipStretchMode::BeatWarp)
+                            return mapClipBeatToSourceBeat(clip, clipBeatWithOffset) * sourceSamplesPerBeat;
+
+                        return clipBeatWithOffset * secondsPerBeat * sourceSampleRate;
+                    };
+
                     const int clipNumSamples = hasDiskStream
                         ? static_cast<int>(juce::jmin<int64>(std::numeric_limits<int>::max(), clipStream->getNumSamples()))
                         : clip.audioData->getNumSamples();
                     const int clipNumChannels = hasDiskStream
                         ? clipStream->getNumChannels()
                         : clip.audioData->getNumChannels();
-                    if (clipNumSamples <= 1 || clipNumChannels <= 0 || sourceIncrement <= 0.0)
+                    if (clipNumSamples <= 1 || clipNumChannels <= 0)
                         continue;
 
                     int64 readWindowStart = 0;
@@ -6628,12 +6778,14 @@ namespace sampledex
                     if (hasDiskStream)
                     {
                         const int64 clipTotalSamples = clipStream->getNumSamples();
+                        const double sourceStartPosition = sourcePositionForClipBeat(clipStartOffsetBeat);
+                        const double sourceEndPosition = sourcePositionForClipBeat(clipStartOffsetBeat + (beatStep * targetNumSamples));
+                        const double minSourcePosition = juce::jmin(sourceStartPosition, sourceEndPosition);
+                        const double maxSourcePosition = juce::jmax(sourceStartPosition, sourceEndPosition);
                         readWindowStart = juce::jlimit<int64>(0,
                                                               juce::jmax<int64>(0, clipTotalSamples - 1),
-                                                              static_cast<int64>(std::floor(sourcePosition)) - clipResamplerTaps);
-                        const double readWindowEndPos = sourcePosition
-                                                      + (sourceIncrement * static_cast<double>(targetNumSamples + 2))
-                                                      + static_cast<double>(clipResamplerTaps);
+                                                              static_cast<int64>(std::floor(minSourcePosition)) - clipResamplerTaps);
+                        const double readWindowEndPos = maxSourcePosition + static_cast<double>(clipResamplerTaps);
                         const int64 windowEnd = juce::jlimit<int64>(0,
                                                                      clipTotalSamples,
                                                                      static_cast<int64>(std::ceil(readWindowEndPos)) + 2);
@@ -6652,14 +6804,17 @@ namespace sampledex
                     const float baseGain = juce::jlimit(0.0f, 8.0f, clip.gainLinear);
                     const double fadeInBeats = juce::jmax(0.0, juce::jmax(clip.fadeInBeats, clip.crossfadeInBeats));
                     const double fadeOutBeats = juce::jmax(0.0, juce::jmax(clip.fadeOutBeats, clip.crossfadeOutBeats));
-                    const double beatStep = bpmValue / (60.0 * juce::jmax(1.0, sampleRate));
-                    double beatInClip = segmentStartBeat - clip.startBeat;
+                    double beatInClip = clipStartOffsetBeat;
                     auto& clipTrackBuffer = trackTimelineWorkBuffers[static_cast<size_t>(clip.trackIndex)];
                     const int clipOutputChannels = clipTrackBuffer.getNumChannels();
                     if (clipOutputChannels <= 0 || clipTrackBuffer.getNumSamples() < bufferToFill.numSamples)
                         continue;
                     const int sourceBufferNumSamples = hasDiskStream ? readWindowLength : clipNumSamples;
                     const double sourceBaseOffset = hasDiskStream ? static_cast<double>(readWindowStart) : 0.0;
+                    auto computeLocalSourcePosition = [&](double localBeat)
+                    {
+                        return sourcePositionForClipBeat(localBeat) - sourceBaseOffset;
+                    };
 
                     if (clipNumChannels == 1)
                     {
@@ -6670,7 +6825,8 @@ namespace sampledex
 
                         for (int sampleIdx = 0; sampleIdx < targetNumSamples; ++sampleIdx)
                         {
-                            if (sourcePosition >= static_cast<double>(clipNumSamples - 1))
+                            const double localSourcePosition = computeLocalSourcePosition(beatInClip);
+                            if (localSourcePosition >= static_cast<double>(sourceBufferNumSamples - 1))
                                 break;
 
                             float fadeGain = 1.0f;
@@ -6691,9 +6847,10 @@ namespace sampledex
                             }
 
                             const int writeIndex = targetStartSample + sampleIdx;
-                            float interpolated = sampleBandlimited(src,
+                            float interpolated = sampleForStretchQuality(src,
                                                                     sourceBufferNumSamples,
-                                                                    sourcePosition - sourceBaseOffset);
+                                                                    localSourcePosition,
+                                                                    stretchQuality);
                             interpolated = applyMicroFadeWindow(beatInClip, clip.lengthBeats, beatStep, interpolated);
                             const float scaled = interpolated * (baseGain * fadeGain);
                             if (dstL != nullptr)
@@ -6701,7 +6858,6 @@ namespace sampledex
                             if (dstR != nullptr)
                                 dstR[writeIndex] += scaled;
 
-                            sourcePosition += sourceIncrement;
                             beatInClip += beatStep;
                         }
                     }
@@ -6722,7 +6878,8 @@ namespace sampledex
 
                         for (int sampleIdx = 0; sampleIdx < targetNumSamples; ++sampleIdx)
                         {
-                            if (sourcePosition >= static_cast<double>(clipNumSamples - 1))
+                            const double localSourcePosition = computeLocalSourcePosition(beatInClip);
+                            if (localSourcePosition >= static_cast<double>(sourceBufferNumSamples - 1))
                                 break;
 
                             float fadeGain = 1.0f;
@@ -6743,18 +6900,17 @@ namespace sampledex
                             }
 
                             const int writeIndex = targetStartSample + sampleIdx;
-                            const double localSourcePosition = sourcePosition - sourceBaseOffset;
                             const float sampleGain = baseGain * fadeGain;
                             for (int ch = 0; ch < mixChannels; ++ch)
                             {
-                                float interpolated = sampleBandlimited(srcPointers[static_cast<size_t>(ch)],
+                                float interpolated = sampleForStretchQuality(srcPointers[static_cast<size_t>(ch)],
                                                                         sourceBufferNumSamples,
-                                                                        localSourcePosition);
+                                                                        localSourcePosition,
+                                                                        stretchQuality);
                                 interpolated = applyMicroFadeWindow(beatInClip, clip.lengthBeats, beatStep, interpolated);
                                 dstPointers[static_cast<size_t>(ch)][writeIndex] += interpolated * sampleGain;
                             }
 
-                            sourcePosition += sourceIncrement;
                             beatInClip += beatStep;
                         }
                     }
@@ -7993,6 +8149,10 @@ namespace sampledex
         newClip.fadeOutBeats = 0.0;
         newClip.crossfadeInBeats = 0.0;
         newClip.crossfadeOutBeats = 0.0;
+        newClip.stretchMode = ClipStretchMode::Tape;
+        newClip.originalTempoBpm = 0.0;
+        newClip.formantPreserve = false;
+        newClip.oneShot = false;
 
         const double bpmNow = juce::jmax(1.0, bpmRt.load(std::memory_order_relaxed));
         const double lengthSeconds = static_cast<double>(reader->lengthInSamples) / newClip.audioSampleRate;
@@ -8012,7 +8172,22 @@ namespace sampledex
             newClip.detectedTempoBpm = acidMeta.tempoBpm;
         else
             newClip.detectedTempoBpm = tryExtractTempoFromFilename(file.getFileNameWithoutExtension());
+
+        newClip.oneShot = hasAcidMeta && acidMeta.oneShot;
+        if (newClip.oneShot)
+            newClip.stretchMode = ClipStretchMode::OneShot;
+        else if (newClip.detectedTempoBpm > 1.0)
+            newClip.stretchMode = ClipStretchMode::BeatWarp;
+
+        newClip.originalTempoBpm = juce::jmax(1.0, newClip.detectedTempoBpm > 1.0 ? newClip.detectedTempoBpm : bpmNow);
         outDetectedTempoBpm = newClip.detectedTempoBpm;
+
+        if (!newClip.oneShot)
+        {
+            auto transientMarkers = detectTransientWarpMarkers(*reader, newClip.lengthBeats);
+            if (!transientMarkers.empty())
+                newClip.warpMarkers = std::move(transientMarkers);
+        }
 
         arrangement.push_back(std::move(newClip));
         outClipIndex = static_cast<int>(arrangement.size()) - 1;
