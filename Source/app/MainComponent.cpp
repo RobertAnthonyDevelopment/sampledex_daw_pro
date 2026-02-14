@@ -3690,72 +3690,11 @@ namespace sampledex
                                          return;
 
                                      auto& left = state[static_cast<size_t>(clipIndex)];
-                                     const double splitLocalBeat = beat - left.startBeat;
-                                     if (splitLocalBeat <= 0.0001 || splitLocalBeat >= left.lengthBeats - 0.0001)
+                                     Clip right;
+                                     if (!ArrangementEditing::splitClipAtBeat(left, right, beat))
                                          return;
 
-                                     Clip right = left;
-                                     right.startBeat = beat;
-                                     right.lengthBeats = left.lengthBeats - splitLocalBeat;
-                                     left.lengthBeats = splitLocalBeat;
-
-                                     if (left.type == ClipType::MIDI)
-                                     {
-                                         std::vector<TimelineEvent> leftEvents;
-                                         std::vector<TimelineEvent> rightEvents;
-                                         leftEvents.reserve(left.events.size());
-                                         rightEvents.reserve(left.events.size());
-
-                                         for (const auto& ev : left.events)
-                                         {
-                                             const double evStart = ev.startBeat;
-                                             const double evEnd = ev.startBeat + ev.durationBeats;
-
-                                             if (evStart < splitLocalBeat)
-                                             {
-                                                 TimelineEvent clippedLeft = ev;
-                                                 clippedLeft.durationBeats = juce::jmax(0.001, juce::jmin(ev.durationBeats, splitLocalBeat - evStart));
-                                                 leftEvents.push_back(clippedLeft);
-
-                                                 if (evEnd > splitLocalBeat)
-                                                 {
-                                                     TimelineEvent rightCarry = ev;
-                                                     rightCarry.startBeat = 0.0;
-                                                     rightCarry.durationBeats = juce::jmax(0.001, evEnd - splitLocalBeat);
-                                                     rightEvents.push_back(rightCarry);
-                                                 }
-                                             }
-                                             else
-                                             {
-                                                 TimelineEvent shifted = ev;
-                                                 shifted.startBeat = juce::jmax(0.0, ev.startBeat - splitLocalBeat);
-                                                 rightEvents.push_back(shifted);
-                                             }
-                                         }
-
-                                         std::vector<MidiCCEvent> leftCC;
-                                         std::vector<MidiCCEvent> rightCC;
-                                         leftCC.reserve(left.ccEvents.size());
-                                         rightCC.reserve(left.ccEvents.size());
-                                         for (const auto& cc : left.ccEvents)
-                                         {
-                                             if (cc.beat < splitLocalBeat)
-                                                 leftCC.push_back(cc);
-                                             else
-                                             {
-                                                 MidiCCEvent shifted = cc;
-                                                 shifted.beat = juce::jmax(0.0, shifted.beat - splitLocalBeat);
-                                                 rightCC.push_back(shifted);
-                                             }
-                                         }
-
-                                         left.events = std::move(leftEvents);
-                                         left.ccEvents = std::move(leftCC);
-                                         right.events = std::move(rightEvents);
-                                         right.ccEvents = std::move(rightCC);
-                                     }
-
-                                     state.insert(state.begin() + clipIndex + 1, right);
+                                     state.insert(state.begin() + clipIndex + 1, std::move(right));
                                      if (selected > clipIndex)
                                          ++selected;
                                  });
@@ -6475,8 +6414,8 @@ namespace sampledex
                     }
 
                     const float baseGain = juce::jlimit(0.0f, 8.0f, clip.gainLinear);
-                    const double fadeInBeats = juce::jmax(0.0, clip.fadeInBeats);
-                    const double fadeOutBeats = juce::jmax(0.0, clip.fadeOutBeats);
+                    const double fadeInBeats = juce::jmax(0.0, juce::jmax(clip.fadeInBeats, clip.crossfadeInBeats));
+                    const double fadeOutBeats = juce::jmax(0.0, juce::jmax(clip.fadeOutBeats, clip.crossfadeOutBeats));
                     const double beatStep = bpmValue / (60.0 * juce::jmax(1.0, sampleRate));
                     double beatInClip = segmentStartBeat - clip.startBeat;
                     auto& clipTrackBuffer = trackTimelineWorkBuffers[static_cast<size_t>(clip.trackIndex)];
@@ -7780,6 +7719,8 @@ namespace sampledex
         newClip.gainLinear = 1.0f;
         newClip.fadeInBeats = 0.0;
         newClip.fadeOutBeats = 0.0;
+        newClip.crossfadeInBeats = 0.0;
+        newClip.crossfadeOutBeats = 0.0;
 
         const double bpmNow = juce::jmax(1.0, bpmRt.load(std::memory_order_relaxed));
         const double lengthSeconds = static_cast<double>(reader->lengthInSamples) / newClip.audioSampleRate;
@@ -8534,6 +8475,8 @@ namespace sampledex
             clip.gainLinear = 1.0f;
             clip.fadeInBeats = 0.0;
             clip.fadeOutBeats = 0.0;
+            clip.crossfadeInBeats = 0.0;
+            clip.crossfadeOutBeats = 0.0;
             destinationClips.push_back(std::move(clip));
         }
     }
@@ -10115,6 +10058,8 @@ namespace sampledex
         menu.addItem(8, "Fade Out 1/4", selectedAudio);
         menu.addItem(9, "Fade Out 1", selectedAudio);
         menu.addItem(10, "Reset Fades", selectedAudio);
+        menu.addItem(12, "Apply 1/8 Crossfade To Next Clip", selectedAudio);
+        menu.addItem(13, "Apply 1/4 Crossfade To Next Clip", selectedAudio);
         menu.addSeparator();
         menu.addItem(11, "Bake Global Transpose into Selected MIDI Clip", selectedMidi && projectTransposeSemitones != 0);
 
@@ -10131,6 +10076,43 @@ namespace sampledex
                                else if (selectedId == 8) setSelectedAudioClipFades(-1.0, 1.0);
                                else if (selectedId == 9) setSelectedAudioClipFades(-1.0, 4.0);
                                else if (selectedId == 10) setSelectedAudioClipFades(0.0, 0.0);
+                               else if (selectedId == 12 || selectedId == 13)
+                               {
+                                   if (!juce::isPositiveAndBelow(selectedClipIndex, static_cast<int>(arrangement.size())))
+                                       return;
+
+                                   const int clipIdx = selectedClipIndex;
+                                   const double fadeBeats = selectedId == 12 ? 0.5 : 1.0;
+                                   applyArrangementEdit("Apply Crossfade",
+                                                        [clipIdx, fadeBeats](std::vector<Clip>& state, int&)
+                                                        {
+                                                            if (!juce::isPositiveAndBelow(clipIdx, static_cast<int>(state.size())))
+                                                                return;
+                                                            auto& left = state[static_cast<size_t>(clipIdx)];
+                                                            int rightIndex = -1;
+                                                            double bestStart = std::numeric_limits<double>::max();
+                                                            for (int i = 0; i < static_cast<int>(state.size()); ++i)
+                                                            {
+                                                                if (i == clipIdx)
+                                                                    continue;
+                                                                const auto& candidate = state[static_cast<size_t>(i)];
+                                                                if (candidate.trackIndex != left.trackIndex)
+                                                                    continue;
+                                                                if (candidate.startBeat < left.startBeat + left.lengthBeats - 0.0001)
+                                                                    continue;
+                                                                if (candidate.startBeat < bestStart)
+                                                                {
+                                                                    bestStart = candidate.startBeat;
+                                                                    rightIndex = i;
+                                                                }
+                                                            }
+                                                            if (rightIndex < 0)
+                                                                return;
+                                                            ArrangementEditing::applySymmetricCrossfade(left,
+                                                                                                        state[static_cast<size_t>(rightIndex)],
+                                                                                                        fadeBeats);
+                                                        });
+                               }
                                else if (selectedId == 11)
                                {
                                    if (!juce::isPositiveAndBelow(selectedClipIndex, static_cast<int>(arrangement.size())))
@@ -11070,6 +11052,8 @@ namespace sampledex
         frozenClip.gainLinear = 1.0f;
         frozenClip.fadeInBeats = 0.0;
         frozenClip.fadeOutBeats = 0.0;
+        frozenClip.crossfadeInBeats = 0.0;
+        frozenClip.crossfadeOutBeats = 0.0;
         arrangement.push_back(std::move(frozenClip));
 
         track->setFrozenRenderPath(renderedPath);
@@ -11126,6 +11110,8 @@ namespace sampledex
         committedClip.gainLinear = 1.0f;
         committedClip.fadeInBeats = 0.0;
         committedClip.fadeOutBeats = 0.0;
+        committedClip.crossfadeInBeats = 0.0;
+        committedClip.crossfadeOutBeats = 0.0;
         arrangement.push_back(std::move(committedClip));
 
         track->setFrozenPlaybackOnly(false);
