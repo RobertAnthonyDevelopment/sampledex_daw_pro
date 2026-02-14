@@ -140,6 +140,7 @@ namespace sampledex
             int bitDepth = 24;
             bool loopRangeOnly = false;
             bool includeMasterProcessing = true;
+            bool enableDither = true;
         };
 
         struct AudioTakeWriterState
@@ -277,11 +278,14 @@ namespace sampledex
                               double exportSampleRate,
                               int bitDepth,
                               bool loopRangeOnly,
-                              bool includeMasterProcessing);
+                              bool includeMasterProcessing,
+                              bool enableDither);
         bool renderOfflinePassToWriter(juce::AudioFormatWriter& writer,
                                        double startBeat,
                                        double endBeat,
                                        double exportSampleRate,
+                                       int targetBitDepth,
+                                       bool enableDither,
                                        std::atomic<bool>* cancelFlag = nullptr,
                                        std::function<void(float)> progressCallback = {});
         double getProjectEndBeat() const;
@@ -688,6 +692,8 @@ namespace sampledex
         float masterGainSmoothingState = 0.9f;
         std::array<float, 2> outputDcPrevInput { 0.0f, 0.0f };
         std::array<float, 2> outputDcPrevOutput { 0.0f, 0.0f };
+        std::array<float, 2> masterLimiterPrevInput { 0.0f, 0.0f };
+        float masterLimiterGainState = 1.0f;
         bool wasTransportPlayingLastBlock = false;
         std::array<juce::AudioBuffer<float>, static_cast<size_t>(maxRealtimeTracks)> trackMainWorkBuffers;
         std::array<juce::AudioBuffer<float>, static_cast<size_t>(maxRealtimeTracks)> trackTimelineWorkBuffers;

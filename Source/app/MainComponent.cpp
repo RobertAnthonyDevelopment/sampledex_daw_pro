@@ -95,6 +95,106 @@ namespace
         return formatName.containsIgnoreCase("VST3");
     }
 
+    static constexpr int clipResamplerPhases = 32;
+    static constexpr int clipResamplerTaps = 16;
+
+    using PolyphaseCoefficients = std::array<std::array<float, clipResamplerTaps>, clipResamplerPhases>;
+
+    static const PolyphaseCoefficients& getClipResamplerCoefficients()
+    {
+        static const PolyphaseCoefficients coeffs = []
+        {
+            PolyphaseCoefficients table {};
+            constexpr int halfTaps = clipResamplerTaps / 2;
+            constexpr double cutoff = 0.92;
+            constexpr double pi = juce::MathConstants<double>::pi;
+
+            for (int phase = 0; phase < clipResamplerPhases; ++phase)
+            {
+                const double frac = static_cast<double>(phase) / static_cast<double>(clipResamplerPhases);
+                double norm = 0.0;
+                for (int tap = 0; tap < clipResamplerTaps; ++tap)
+                {
+                    const double x = static_cast<double>(tap - halfTaps + 1) - frac;
+                    const double sincArg = x * cutoff;
+                    const double sinc = std::abs(sincArg) < 1.0e-8
+                        ? 1.0
+                        : std::sin(pi * sincArg) / (pi * sincArg);
+                    const double window = 0.54 - (0.46 * std::cos((2.0 * pi * static_cast<double>(tap))
+                                                                   / static_cast<double>(clipResamplerTaps - 1)));
+                    const double v = cutoff * sinc * window;
+                    table[static_cast<size_t>(phase)][static_cast<size_t>(tap)] = static_cast<float>(v);
+                    norm += v;
+                }
+                const float normInv = static_cast<float>(1.0 / juce::jmax(1.0e-12, norm));
+                for (int tap = 0; tap < clipResamplerTaps; ++tap)
+                    table[static_cast<size_t>(phase)][static_cast<size_t>(tap)] *= normInv;
+            }
+            return table;
+        }();
+
+        return coeffs;
+    }
+
+    static inline float sampleBandlimited(const float* src, int srcLength, double sourcePosition) noexcept
+    {
+        if (src == nullptr || srcLength <= 0)
+            return 0.0f;
+
+        const auto& coeffs = getClipResamplerCoefficients();
+        constexpr int halfTaps = clipResamplerTaps / 2;
+        const int baseIndex = static_cast<int>(std::floor(sourcePosition));
+        const double frac = sourcePosition - static_cast<double>(baseIndex);
+        const int phase = juce::jlimit(0,
+                                       clipResamplerPhases - 1,
+                                       static_cast<int>(std::round(frac * static_cast<double>(clipResamplerPhases - 1))));
+        const int start = baseIndex - halfTaps + 1;
+        float out = 0.0f;
+        for (int tap = 0; tap < clipResamplerTaps; ++tap)
+        {
+            const int srcIndex = juce::jlimit(0, srcLength - 1, start + tap);
+            out += src[srcIndex] * coeffs[static_cast<size_t>(phase)][static_cast<size_t>(tap)];
+        }
+        return out;
+    }
+
+    static inline std::uint32_t nextDitherState(std::uint32_t& state) noexcept
+    {
+        state = (state * 1664525u) + 1013904223u;
+        return state;
+    }
+
+    static void applyTpdfDither(juce::AudioBuffer<float>& buffer,
+                                int startSample,
+                                int numSamples,
+                                int bitDepth,
+                                std::uint32_t& rngState)
+    {
+        if (bitDepth <= 0 || bitDepth >= 24)
+            return;
+
+        const float scale = static_cast<float>(1u << juce::jmax(1, bitDepth - 1));
+        const float invScale = 1.0f / scale;
+        const float lsb = invScale;
+        constexpr float invUint = 1.0f / 4294967295.0f;
+        const int channels = buffer.getNumChannels();
+
+        for (int ch = 0; ch < channels; ++ch)
+        {
+            auto* write = buffer.getWritePointer(ch, startSample);
+            if (write == nullptr)
+                continue;
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const float r1 = static_cast<float>(nextDitherState(rngState)) * invUint;
+                const float r2 = static_cast<float>(nextDitherState(rngState)) * invUint;
+                const float dither = (r1 - r2) * lsb;
+                const float withDither = juce::jlimit(-1.0f, 1.0f, write[i] + dither);
+                write[i] = std::round(withDither * scale) * invScale;
+            }
+        }
+    }
+
     static juce::String scanFormatDisplayName(const juce::String& formatName)
     {
         if (formatNameLooksLikeAudioUnit(formatName))
@@ -5783,6 +5883,8 @@ namespace sampledex
         masterGainSmoothingState = masterOutputGainRt.load(std::memory_order_relaxed);
         outputDcPrevInput = { 0.0f, 0.0f };
         outputDcPrevOutput = { 0.0f, 0.0f };
+        masterLimiterPrevInput = { 0.0f, 0.0f };
+        masterLimiterGainState = 1.0f;
         wasTransportPlayingLastBlock = false;
         masterPhaseCorrelationRt.store(0.0f, std::memory_order_relaxed);
         masterLoudnessLufsRt.store(-120.0f, std::memory_order_relaxed);
@@ -5851,6 +5953,8 @@ namespace sampledex
             }
             outputDcPrevInput = { 0.0f, 0.0f };
             outputDcPrevOutput = { 0.0f, 0.0f };
+            masterLimiterPrevInput = { 0.0f, 0.0f };
+            masterLimiterGainState = 1.0f;
             masterPeakMeterRt.store(masterPeakMeterRt.load(std::memory_order_relaxed) * 0.86f, std::memory_order_relaxed);
             masterRmsMeterRt.store(masterRmsMeterRt.load(std::memory_order_relaxed) * 0.82f, std::memory_order_relaxed);
             return;
@@ -6395,9 +6499,10 @@ namespace sampledex
                         const int64 clipTotalSamples = clipStream->getNumSamples();
                         readWindowStart = juce::jlimit<int64>(0,
                                                               juce::jmax<int64>(0, clipTotalSamples - 1),
-                                                              static_cast<int64>(std::floor(sourcePosition)));
+                                                              static_cast<int64>(std::floor(sourcePosition)) - clipResamplerTaps);
                         const double readWindowEndPos = sourcePosition
-                                                      + (sourceIncrement * static_cast<double>(targetNumSamples + 2));
+                                                      + (sourceIncrement * static_cast<double>(targetNumSamples + 2))
+                                                      + static_cast<double>(clipResamplerTaps);
                         const int64 windowEnd = juce::jlimit<int64>(0,
                                                                      clipTotalSamples,
                                                                      static_cast<int64>(std::ceil(readWindowEndPos)) + 2);
@@ -6424,11 +6529,8 @@ namespace sampledex
                         continue;
                     for (int sampleIdx = 0; sampleIdx < targetNumSamples; ++sampleIdx)
                     {
-                        const int sourceIndex = static_cast<int>(sourcePosition);
-                        if (sourceIndex >= clipNumSamples - 1)
+                        if (sourcePosition >= static_cast<double>(clipNumSamples - 1))
                             break;
-
-                        const double frac = sourcePosition - static_cast<double>(sourceIndex);
                         float fadeGain = 1.0f;
                         if (fadeInBeats > 0.0)
                             fadeGain = juce::jmin(fadeGain, static_cast<float>(juce::jlimit(0.0, 1.0, beatInClip / fadeInBeats)));
@@ -6443,14 +6545,12 @@ namespace sampledex
                         {
                             const auto* src = hasDiskStream ? audioStreamScratch.getReadPointer(0)
                                                             : clip.audioData->getReadPointer(0);
-                            const int localIndex = hasDiskStream
-                                ? sourceIndex - static_cast<int>(readWindowStart)
-                                : sourceIndex;
-                            if (localIndex < 0 || localIndex + 1 >= (hasDiskStream ? readWindowLength : clipNumSamples))
-                                break;
-                            const float s0 = src[localIndex];
-                            const float s1 = src[localIndex + 1];
-                            const float interpolated = s0 + (s1 - s0) * static_cast<float>(frac);
+                            const double localSourcePosition = hasDiskStream
+                                ? sourcePosition - static_cast<double>(readWindowStart)
+                                : sourcePosition;
+                            const float interpolated = sampleBandlimited(src,
+                                                                         hasDiskStream ? readWindowLength : clipNumSamples,
+                                                                         localSourcePosition);
                             if (clipOutputChannels > 0)
                             {
                                 auto* dstL = clipTrackBuffer.getWritePointer(0);
@@ -6470,14 +6570,12 @@ namespace sampledex
                                 const auto* src = hasDiskStream ? audioStreamScratch.getReadPointer(ch)
                                                                 : clip.audioData->getReadPointer(ch);
                                 auto* dst = clipTrackBuffer.getWritePointer(ch);
-                                const int localIndex = hasDiskStream
-                                    ? sourceIndex - static_cast<int>(readWindowStart)
-                                    : sourceIndex;
-                                if (localIndex < 0 || localIndex + 1 >= (hasDiskStream ? readWindowLength : clipNumSamples))
-                                    continue;
-                                const float s0 = src[localIndex];
-                                const float s1 = src[localIndex + 1];
-                                const float interpolated = s0 + (s1 - s0) * static_cast<float>(frac);
+                                const double localSourcePosition = hasDiskStream
+                                    ? sourcePosition - static_cast<double>(readWindowStart)
+                                    : sourcePosition;
+                                const float interpolated = sampleBandlimited(src,
+                                                                             hasDiskStream ? readWindowLength : clipNumSamples,
+                                                                             localSourcePosition);
                                 dst[writeIndex] += interpolated * sampleGain;
                             }
                         }
@@ -6894,23 +6992,40 @@ namespace sampledex
 
         if (masterLimiterEnabledRt.load(std::memory_order_relaxed))
         {
-            constexpr float threshold = 0.96f;
-            constexpr float knee = 0.14f;
-            for (int ch = 0; ch < outputChannels; ++ch)
+            constexpr float ceiling = 0.985f;
+            constexpr float attack = 0.30f;
+            constexpr float release = 0.0012f;
+            for (int i = 0; i < bufferToFill.numSamples; ++i)
             {
-                auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                for (int i = 0; i < bufferToFill.numSamples; ++i)
+                float overPeak = 0.0f;
+                for (int ch = 0; ch < outputChannels; ++ch)
                 {
+                    auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
                     const float x = write[i];
-                    const float ax = std::abs(x);
-                    if (ax <= threshold)
-                        continue;
+                    const float xHalf = 0.5f * (masterLimiterPrevInput[static_cast<size_t>(juce::jmin(ch, 1))] + x);
+                    overPeak = juce::jmax(overPeak, std::abs(x));
+                    overPeak = juce::jmax(overPeak, std::abs(xHalf));
+                }
 
-                    const float over = ax - threshold;
-                    const float compressed = threshold + (over / (1.0f + (over / knee)));
-                    write[i] = std::copysign(juce::jmin(1.0f, compressed), x);
+                const float targetGain = overPeak > ceiling ? (ceiling / overPeak) : 1.0f;
+                if (targetGain < masterLimiterGainState)
+                    masterLimiterGainState += (targetGain - masterLimiterGainState) * attack;
+                else
+                    masterLimiterGainState += (targetGain - masterLimiterGainState) * release;
+
+                for (int ch = 0; ch < outputChannels; ++ch)
+                {
+                    auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                    const float limited = write[i] * masterLimiterGainState;
+                    write[i] = juce::jlimit(-ceiling, ceiling, limited);
+                    masterLimiterPrevInput[static_cast<size_t>(juce::jmin(ch, 1))] = write[i];
                 }
             }
+        }
+        else
+        {
+            masterLimiterPrevInput = { 0.0f, 0.0f };
+            masterLimiterGainState = 1.0f;
         }
 
         constexpr float dcBlockCoeff = 0.995f;
@@ -7186,6 +7301,8 @@ namespace sampledex
         outputSafetyMuteBlocksRt.store(0, std::memory_order_relaxed);
         outputDcPrevInput = { 0.0f, 0.0f };
         outputDcPrevOutput = { 0.0f, 0.0f };
+        masterLimiterPrevInput = { 0.0f, 0.0f };
+        masterLimiterGainState = 1.0f;
         lastAudioDeviceNameSeen = device->getName();
         refreshInputDeviceSafetyState();
     }
@@ -7207,6 +7324,8 @@ namespace sampledex
         outputSafetyMuteBlocksRt.store(0, std::memory_order_relaxed);
         outputDcPrevInput = { 0.0f, 0.0f };
         outputDcPrevOutput = { 0.0f, 0.0f };
+        masterLimiterPrevInput = { 0.0f, 0.0f };
+        masterLimiterGainState = 1.0f;
         for (auto& tapInfo : inputTapNumChannels)
             tapInfo.store(0, std::memory_order_relaxed);
         for (auto& tapInfo : inputTapNumSamples)
@@ -10298,6 +10417,7 @@ namespace sampledex
         outSettings.bitDepth = 24;
         outSettings.loopRangeOnly = transport.isLooping();
         outSettings.includeMasterProcessing = !exportingStems;
+        outSettings.enableDither = outSettings.bitDepth < 24;
         return true;
     }
 
@@ -10333,7 +10453,8 @@ namespace sampledex
                                                                  settings.sampleRate,
                                                                  settings.bitDepth,
                                                                  settings.loopRangeOnly,
-                                                                 settings.includeMasterProcessing))
+                                                                 settings.includeMasterProcessing,
+                                                                 settings.enableDither))
                                                return;
 
                                            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
@@ -10373,7 +10494,8 @@ namespace sampledex
                                                                  settings.sampleRate,
                                                                  settings.bitDepth,
                                                                  settings.loopRangeOnly,
-                                                                 settings.includeMasterProcessing))
+                                                                 settings.includeMasterProcessing,
+                                                                 settings.enableDither))
                                                return;
 
                                            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
@@ -10410,6 +10532,8 @@ namespace sampledex
                                                    double startBeat,
                                                    double endBeat,
                                                    double exportSampleRate,
+                                                   int targetBitDepth,
+                                                   bool enableDither,
                                                    std::atomic<bool>* cancelFlag,
                                                    std::function<void(float)> progressCallback)
     {
@@ -10437,6 +10561,7 @@ namespace sampledex
         transport.setPosition(startBeat);
         transport.play();
 
+        std::uint32_t ditherState = 0x51ed270bu;
         int64_t samplesRendered = 0;
         while (samplesRendered < totalSamples)
         {
@@ -10450,6 +10575,8 @@ namespace sampledex
             renderBlock.clear();
             juce::AudioSourceChannelInfo blockInfo(&renderBlock, 0, numSamples);
             getNextAudioBlock(blockInfo);
+            if (enableDither)
+                applyTpdfDither(renderBlock, 0, numSamples, targetBitDepth, ditherState);
             if (!writer.writeFromAudioSampleBuffer(renderBlock, 0, numSamples))
             {
                 transport.stop();
@@ -10485,7 +10612,8 @@ namespace sampledex
                                          double exportSampleRate,
                                          int bitDepth,
                                          bool loopRangeOnly,
-                                         bool includeMasterProcessing)
+                                         bool includeMasterProcessing,
+                                         bool enableDither)
     {
         if (tracks.isEmpty())
         {
@@ -10643,7 +10771,12 @@ namespace sampledex
             configureRenderState();
             auto writer = createWriterForFile(destination);
             if (writer == nullptr
-                || !renderOfflinePassToWriter(*writer, startBeat, endBeat, exportSampleRate))
+                || !renderOfflinePassToWriter(*writer,
+                                              startBeat,
+                                              endBeat,
+                                              exportSampleRate,
+                                              resolvedBitDepth,
+                                              enableDither && resolvedBitDepth < 24))
             {
                 success = false;
                 if (failureReason.isEmpty())
@@ -10676,7 +10809,12 @@ namespace sampledex
 
                 auto writer = createWriterForFile(destination.getChildFile(stemName + "." + formatExtension));
                 if (writer == nullptr
-                    || !renderOfflinePassToWriter(*writer, startBeat, endBeat, exportSampleRate))
+                    || !renderOfflinePassToWriter(*writer,
+                                                  startBeat,
+                                                  endBeat,
+                                                  exportSampleRate,
+                                                  resolvedBitDepth,
+                                                  enableDither && resolvedBitDepth < 24))
                 {
                     success = false;
                     if (failureReason.isEmpty())
@@ -10973,6 +11111,8 @@ namespace sampledex
             startBeat,
             endBeat,
             renderSampleRate,
+            24,
+            false,
             &renderCancelRequestedRt,
             [this, trackIndex](float progress)
             {
