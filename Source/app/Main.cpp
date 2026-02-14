@@ -217,6 +217,66 @@ namespace
         return {};
     }
 
+    static int parseScanTimeoutMsArg(const juce::StringArray& tokens,
+                                     const juce::String& key,
+                                     int defaultValueMs) noexcept
+    {
+        const auto timeoutArg = getCommandArgValue(tokens, key);
+        if (timeoutArg.isEmpty())
+            return defaultValueMs;
+
+        const auto parsed = timeoutArg.getIntValue();
+        if (parsed <= 0)
+            return defaultValueMs;
+
+        return juce::jlimit(1000, 600000, parsed);
+    }
+
+    static juce::StringArray loadDeadMansPedalEntries(const juce::File& deadMansPedalFile)
+    {
+        juce::StringArray entries;
+        if (!deadMansPedalFile.existsAsFile())
+            return entries;
+
+        entries.addLines(deadMansPedalFile.loadFileAsString());
+        entries.trim();
+        entries.removeEmptyStrings();
+        return entries;
+    }
+
+    static juce::String getLikelyCurrentScanTarget(const juce::String& pluginName,
+                                                   const juce::StringArray& beforeEntries,
+                                                   const juce::StringArray& afterEntries)
+    {
+        if (pluginName.trim().isNotEmpty())
+            return pluginName.trim();
+        if (afterEntries.size() > 0)
+            return afterEntries[afterEntries.size() - 1].trim();
+        if (beforeEntries.size() > 0)
+            return beforeEntries[beforeEntries.size() - 1].trim();
+        return "<unknown plugin>";
+    }
+
+    static void appendDeadMansPedalEntryIfNeeded(const juce::File& deadMansPedalFile,
+                                                  const juce::String& entry)
+    {
+        const auto trimmed = entry.trim();
+        if (trimmed.isEmpty())
+            return;
+
+        auto existingEntries = loadDeadMansPedalEntries(deadMansPedalFile);
+        if (existingEntries.contains(trimmed))
+            return;
+
+        juce::String content = deadMansPedalFile.existsAsFile()
+            ? deadMansPedalFile.loadFileAsString()
+            : juce::String();
+        if (content.isNotEmpty() && !content.endsWithChar('\n'))
+            content << "\n";
+        content << trimmed << "\n";
+        deadMansPedalFile.replaceWithText(content);
+    }
+
     static int runPluginProbeMode(const juce::StringArray& tokens)
     {
         const auto formatName = getCommandArgValue(tokens, "--format");
@@ -409,6 +469,9 @@ namespace
         const auto knownListPath = getCommandArgValue(tokens, "--known");
         const auto deadMansPedalPath = getCommandArgValue(tokens, "--deadman");
         const auto requestedFormat = getCommandArgValue(tokens, "--plugin-scan-format");
+        const int scanTimeoutMs = parseScanTimeoutMsArg(tokens,
+                                                        "--plugin-scan-timeout-ms",
+                                                        45000);
 
         if (knownListPath.isEmpty() || deadMansPedalPath.isEmpty())
         {
@@ -454,8 +517,43 @@ namespace
                                                  searchPath,
                                                  true,
                                                  deadMansPedalFile);
+
+            const double formatStartMs = juce::Time::getMillisecondCounterHiRes();
             juce::String pluginName;
-            while (scanner.scanNextFile(true, pluginName)) {}
+            while (true)
+            {
+                const auto beforeEntries = loadDeadMansPedalEntries(deadMansPedalFile);
+                const double fileStartMs = juce::Time::getMillisecondCounterHiRes();
+                const bool hasNext = scanner.scanNextFile(true, pluginName);
+                const double nowMs = juce::Time::getMillisecondCounterHiRes();
+
+                const auto afterEntries = loadDeadMansPedalEntries(deadMansPedalFile);
+                const auto target = getLikelyCurrentScanTarget(pluginName, beforeEntries, afterEntries);
+                const auto fileElapsedMs = static_cast<int>(std::llround(nowMs - fileStartMs));
+                const auto formatElapsedMs = static_cast<int>(std::llround(nowMs - formatStartMs));
+
+                if (fileElapsedMs > scanTimeoutMs)
+                {
+                    const auto timeoutLabel = target + " (timeout after "
+                                            + juce::String(fileElapsedMs) + " ms)";
+                    failedFiles.addIfNotAlreadyThere(timeoutLabel);
+                    blacklistedEntries.addIfNotAlreadyThere(format->getName() + ": " + timeoutLabel);
+                    appendDeadMansPedalEntryIfNeeded(deadMansPedalFile, target);
+                }
+
+                if (formatElapsedMs > scanTimeoutMs)
+                {
+                    const auto timeoutLabel = target + " (format timeout after "
+                                            + juce::String(formatElapsedMs) + " ms)";
+                    failedFiles.addIfNotAlreadyThere(timeoutLabel);
+                    blacklistedEntries.addIfNotAlreadyThere(format->getName() + ": " + timeoutLabel);
+                    appendDeadMansPedalEntryIfNeeded(deadMansPedalFile, target);
+                    break;
+                }
+
+                if (!hasNext)
+                    break;
+            }
 
             for (const auto& failed : scanner.getFailedFiles())
                 failedFiles.addIfNotAlreadyThere(failed);
