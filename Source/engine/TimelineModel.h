@@ -181,6 +181,8 @@ namespace sampledex
         std::vector<MidiPolyAftertouchEvent> polyAftertouchEvents;
         std::vector<MidiProgramChangeEvent> programChangeEvents;
         std::vector<MidiRawEvent> rawEvents;
+        int sourceMidiChannel = -1;
+        juce::String sourceTrackName;
         
         // Audio Content (RAM Cache)
         // We use shared_ptr so we can pass this around efficiently without copying heavy audio data
@@ -214,6 +216,8 @@ namespace sampledex
                             polyAftertouchEvents,
                             programChangeEvents,
                             rawEvents,
+                            sourceMidiChannel,
+                            sourceTrackName,
                             audioData,
                             audioFilePath,
                             audioSampleRate,
@@ -241,6 +245,8 @@ namespace sampledex
                             other.polyAftertouchEvents,
                             other.programChangeEvents,
                             other.rawEvents,
+                            other.sourceMidiChannel,
+                            other.sourceTrackName,
                             other.audioData,
                             other.audioFilePath,
                             other.audioSampleRate,

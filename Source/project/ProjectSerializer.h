@@ -5,6 +5,7 @@
 #include <vector>
 #include "TimelineModel.h"
 #include "Track.h"
+#include "SmfPipeline.h"
 
 namespace sampledex
 {
@@ -67,6 +68,7 @@ namespace sampledex
             double loopStartBeat = 0.0;
             double loopEndBeat = 8.0;
             std::vector<TempoPoint> tempoMap;
+            std::vector<SmfPipeline::TimeSignaturePoint> timeSignatureMap;
             std::vector<TrackState> tracks;
             std::vector<AutomationLane> automationLanes;
             std::vector<Clip> arrangement;
@@ -106,6 +108,15 @@ namespace sampledex
                 auto* t = tempoXml->createNewChildElement("TEMPO");
                 t->setAttribute("beat", point.beat);
                 t->setAttribute("bpm", point.bpm);
+            }
+
+            auto* sigXml = root.createNewChildElement("TIME_SIGNATURE_MAP");
+            for (const auto& point : project.timeSignatureMap)
+            {
+                auto* t = sigXml->createNewChildElement("SIGNATURE");
+                t->setAttribute("beat", point.beat);
+                t->setAttribute("numerator", point.numerator);
+                t->setAttribute("denominator", point.denominator);
             }
 
             auto* tracksXml = root.createNewChildElement("TRACKS");
@@ -191,6 +202,8 @@ namespace sampledex
                 cXml->setAttribute("length", clip.lengthBeats);
                 cXml->setAttribute("offset", clip.offsetBeats);
                 cXml->setAttribute("track", clip.trackIndex);
+                cXml->setAttribute("sourceMidiChannel", clip.sourceMidiChannel);
+                cXml->setAttribute("sourceTrackName", clip.sourceTrackName);
                 cXml->setAttribute("gain", clip.gainLinear);
                 cXml->setAttribute("fadeIn", clip.fadeInBeats);
                 cXml->setAttribute("fadeOut", clip.fadeOutBeats);
@@ -366,6 +379,20 @@ namespace sampledex
             if (outProject.tempoMap.empty())
                 outProject.tempoMap.push_back({ 0.0, outProject.bpm });
 
+            if (auto* sigXml = root->getChildByName("TIME_SIGNATURE_MAP"))
+            {
+                for (auto* sig = sigXml->getFirstChildElement(); sig != nullptr; sig = sig->getNextElement())
+                {
+                    if (!sig->hasTagName("SIGNATURE"))
+                        continue;
+                    SmfPipeline::TimeSignaturePoint point;
+                    point.beat = sig->getDoubleAttribute("beat", 0.0);
+                    point.numerator = sig->getIntAttribute("numerator", 4);
+                    point.denominator = sig->getIntAttribute("denominator", 4);
+                    outProject.timeSignatureMap.push_back(point);
+                }
+            }
+
             if (auto* tracksXml = root->getChildByName("TRACKS"))
             {
                 for (auto* tXml = tracksXml->getFirstChildElement(); tXml != nullptr; tXml = tXml->getNextElement())
@@ -490,6 +517,8 @@ namespace sampledex
                     clip.lengthBeats = juce::jmax(0.0625, cXml->getDoubleAttribute("length", 1.0));
                     clip.offsetBeats = juce::jmax(0.0, cXml->getDoubleAttribute("offset", 0.0));
                     clip.trackIndex = juce::jmax(0, cXml->getIntAttribute("track", 0));
+                    clip.sourceMidiChannel = cXml->getIntAttribute("sourceMidiChannel", -1);
+                    clip.sourceTrackName = cXml->getStringAttribute("sourceTrackName");
                     clip.gainLinear = static_cast<float>(cXml->getDoubleAttribute("gain", 1.0));
                     clip.fadeInBeats = juce::jmax(0.0, cXml->getDoubleAttribute("fadeIn", 0.0));
                     clip.fadeOutBeats = juce::jmax(0.0, cXml->getDoubleAttribute("fadeOut", 0.0));

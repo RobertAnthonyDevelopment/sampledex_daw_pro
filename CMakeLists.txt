@@ -84,6 +84,7 @@ target_sources(SampledexChordLab PRIVATE
     Source/ui/Mixer.h
     Source/engine/TimelineModel.h
     Source/engine/TransportEngine.h
+    Source/engine/SmfPipeline.h
     Source/ui/TimelineComponent.h
     Source/ui/PianoRollComponent.h
     Source/ui/StepSequencerComponent.h
@@ -170,4 +171,19 @@ if(APPLE)
     )
 endif()
 
+endif()
+
+
+if(SAMPLEDEX_HAS_JUCE)
+add_executable(SmfPipelineStaticTests
+    Source/tests/SmfPipelineStaticTests.cpp
+)
+target_include_directories(SmfPipelineStaticTests PRIVATE
+    Source
+    Source/engine
+)
+target_link_libraries(SmfPipelineStaticTests PRIVATE
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+)
 endif()

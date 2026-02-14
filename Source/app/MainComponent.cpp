@@ -4393,6 +4393,7 @@ namespace sampledex
         project.tempoMap.reserve(tempoEvents.size());
         for (const auto& tempo : tempoEvents)
             project.tempoMap.push_back({ tempo.beat, tempo.bpm });
+        project.timeSignatureMap = timeSignatureEvents;
 
         project.tracks.reserve(static_cast<size_t>(tracks.size()));
         for (auto* track : tracks)
@@ -8198,260 +8199,75 @@ namespace sampledex
                                              int targetTrack,
                                              double startBeat,
                                              int& outClipIndex,
-                                             double& outTempoBpm)
+                                             double& outTempoBpm,
+                                             SmfPipeline::ImportMode mode)
     {
         outClipIndex = -1;
         outTempoBpm = 0.0;
         if (!file.existsAsFile() || !isSupportedMidiFile(file) || tracks.isEmpty())
             return false;
+
+        SmfPipeline::ImportResult imported;
+        if (!SmfPipeline::importSmfFile(file, mode, imported))
+            return false;
+
+        outTempoBpm = imported.detectedTempoBpm;
+        if (!imported.tempoMap.empty())
+        {
+            tempoEvents.clear();
+            tempoEvents.reserve(imported.tempoMap.size());
+            for (const auto& tempo : imported.tempoMap)
+                tempoEvents.push_back({ tempo.beat, tempo.bpm });
+            rebuildTempoEventMap();
+        }
+        if (!imported.timeSignatureMap.empty())
+        {
+            timeSignatureEvents = imported.timeSignatureMap;
+            const auto& first = timeSignatureEvents.front();
+            transport.setTimeSignature(first.numerator, first.denominator);
+        }
+
         const int resolvedTargetTrack = juce::jlimit(0, juce::jmax(0, tracks.size() - 1), targetTrack);
+        int firstClipIndex = -1;
 
-        juce::FileInputStream input(file);
-        if (!input.openedOk())
-            return false;
-
-        juce::MidiFile midiFile;
-        if (!midiFile.readFrom(input))
-            return false;
-
-        midiFile.convertTimestampTicksToSeconds();
-
-        // First tempo meta event becomes imported file tempo hint.
-        for (int trackIdx = 0; trackIdx < midiFile.getNumTracks() && outTempoBpm <= 0.0; ++trackIdx)
+        for (const auto& importedClip : imported.clips)
         {
-            if (const auto* seq = midiFile.getTrack(trackIdx))
+            Clip clip = importedClip.clip;
+            clip.startBeat = juce::jmax(0.0, startBeat);
+
+            if (mode == SmfPipeline::ImportMode::SingleMergedClip)
             {
-                for (int i = 0; i < seq->getNumEvents(); ++i)
-                {
-                    const auto& msg = seq->getEventPointer(i)->message;
-                    if (!msg.isTempoMetaEvent())
-                        continue;
-                    const double secPerQuarter = msg.getTempoSecondsPerQuarterNote();
-                    if (secPerQuarter > 0.0)
-                    {
-                        outTempoBpm = 60.0 / secPerQuarter;
-                        break;
-                    }
-                }
+                clip.trackIndex = resolvedTargetTrack;
+                clip.name = file.getFileNameWithoutExtension();
+                ensureTrackHasPlayableInstrument(clip.trackIndex);
+                arrangement.push_back(std::move(clip));
+                if (firstClipIndex < 0)
+                    firstClipIndex = static_cast<int>(arrangement.size()) - 1;
+                break;
             }
+
+            int destinationTrack = resolvedTargetTrack + importedClip.sourceTrackIndex;
+            while (destinationTrack >= tracks.size() && tracks.size() < maxRealtimeTracks)
+                createNewTrack();
+            destinationTrack = juce::jlimit(0, juce::jmax(0, tracks.size() - 1), destinationTrack);
+
+            if (juce::isPositiveAndBelow(destinationTrack, tracks.size())
+                && importedClip.sourceTrackName.isNotEmpty())
+            {
+                tracks[destinationTrack]->setTrackName(importedClip.sourceTrackName);
+            }
+
+            clip.trackIndex = destinationTrack;
+            if (clip.name.isEmpty())
+                clip.name = importedClip.sourceTrackName;
+            ensureTrackHasPlayableInstrument(clip.trackIndex);
+            arrangement.push_back(std::move(clip));
+            if (firstClipIndex < 0)
+                firstClipIndex = static_cast<int>(arrangement.size()) - 1;
         }
 
-        const double bpmForBeatConversion = juce::jmax(1.0,
-                                                       outTempoBpm > 1.0 ? outTempoBpm
-                                                                         : bpmRt.load(std::memory_order_relaxed));
-        const double secondsPerBeat = 60.0 / bpmForBeatConversion;
-
-        std::vector<TimelineEvent> events;
-        std::vector<MidiCCEvent> ccEvents;
-        std::vector<MidiPitchBendEvent> pitchBendEvents;
-        std::vector<MidiChannelPressureEvent> channelPressureEvents;
-        std::vector<MidiPolyAftertouchEvent> polyAftertouchEvents;
-        std::vector<MidiProgramChangeEvent> programChangeEvents;
-        std::vector<MidiRawEvent> rawEvents;
-        events.reserve(1024);
-        ccEvents.reserve(1024);
-        pitchBendEvents.reserve(256);
-        channelPressureEvents.reserve(256);
-        polyAftertouchEvents.reserve(256);
-        programChangeEvents.reserve(256);
-        rawEvents.reserve(256);
-
-        for (int trackIdx = 0; trackIdx < midiFile.getNumTracks(); ++trackIdx)
-        {
-            const auto* seq = midiFile.getTrack(trackIdx);
-            if (seq == nullptr)
-                continue;
-            const double trackEndSeconds = juce::jmax(0.0, seq->getEndTime());
-
-            std::array<std::array<bool, 128>, 16> active {};
-            std::array<std::array<double, 128>, 16> activeStartSeconds {};
-            std::array<std::array<uint8_t, 128>, 16> activeVelocity {};
-            std::array<int, 16> activeBankMsb;
-            std::array<int, 16> activeBankLsb;
-            activeBankMsb.fill(-1);
-            activeBankLsb.fill(-1);
-
-            for (int i = 0; i < seq->getNumEvents(); ++i)
-            {
-                const auto& msg = seq->getEventPointer(i)->message;
-                const int channel = juce::jlimit(1, 16, msg.getChannel()) - 1;
-                const int note = juce::jlimit(0, 127, msg.getNoteNumber());
-                const double eventSeconds = juce::jmax(0.0, msg.getTimeStamp());
-
-                if (msg.isNoteOn())
-                {
-                    active[static_cast<size_t>(channel)][static_cast<size_t>(note)] = true;
-                    activeStartSeconds[static_cast<size_t>(channel)][static_cast<size_t>(note)] = eventSeconds;
-                    const float rawVelocity = static_cast<float>(msg.getVelocity());
-                    const int velocity = rawVelocity <= 1.0f
-                        ? static_cast<int>(std::lround(rawVelocity * 127.0f))
-                        : static_cast<int>(std::lround(rawVelocity));
-                    activeVelocity[static_cast<size_t>(channel)][static_cast<size_t>(note)]
-                        = static_cast<uint8_t>(juce::jlimit(1, 127, velocity));
-                }
-                else if (msg.isNoteOff())
-                {
-                    if (!active[static_cast<size_t>(channel)][static_cast<size_t>(note)])
-                        continue;
-
-                    const double startSeconds = activeStartSeconds[static_cast<size_t>(channel)][static_cast<size_t>(note)];
-                    const double endSeconds = juce::jmax(startSeconds + 0.01, eventSeconds);
-                    TimelineEvent ev;
-                    ev.startBeat = juce::jmax(0.0, startSeconds / secondsPerBeat);
-                    ev.durationBeats = juce::jmax(0.0625, (endSeconds - startSeconds) / secondsPerBeat);
-                    ev.noteNumber = note;
-                    ev.velocity = activeVelocity[static_cast<size_t>(channel)][static_cast<size_t>(note)];
-                    events.push_back(ev);
-                    active[static_cast<size_t>(channel)][static_cast<size_t>(note)] = false;
-                }
-                else if (msg.isController())
-                {
-                    MidiCCEvent cc;
-                    cc.beat = juce::jmax(0.0, eventSeconds / secondsPerBeat);
-                    cc.controller = juce::jlimit(0, 127, msg.getControllerNumber());
-                    cc.value = static_cast<uint8_t>(juce::jlimit(0, 127, msg.getControllerValue()));
-                    ccEvents.push_back(cc);
-
-                    if (cc.controller == 0 || cc.controller == 32)
-                    {
-                        if (cc.controller == 0)
-                            activeBankMsb[static_cast<size_t>(channel)] = cc.value;
-                        else
-                            activeBankLsb[static_cast<size_t>(channel)] = cc.value;
-
-                        MidiProgramChangeEvent bank;
-                        bank.beat = cc.beat;
-                        bank.bankMsb = (cc.controller == 0) ? cc.value : -1;
-                        bank.bankLsb = (cc.controller == 32) ? cc.value : -1;
-                        bank.program = -1;
-                        programChangeEvents.push_back(bank);
-                    }
-                }
-                else if (msg.isPitchWheel())
-                {
-                    MidiPitchBendEvent bend;
-                    bend.beat = juce::jmax(0.0, eventSeconds / secondsPerBeat);
-                    bend.value = juce::jlimit(0, 16383, msg.getPitchWheelValue());
-                    pitchBendEvents.push_back(bend);
-                }
-                else if (msg.isChannelPressure())
-                {
-                    MidiChannelPressureEvent pressure;
-                    pressure.beat = juce::jmax(0.0, eventSeconds / secondsPerBeat);
-                    pressure.pressure = static_cast<uint8_t>(juce::jlimit(0, 127, msg.getChannelPressureValue()));
-                    channelPressureEvents.push_back(pressure);
-                }
-                else if (msg.isAftertouch())
-                {
-                    MidiPolyAftertouchEvent aftertouch;
-                    aftertouch.beat = juce::jmax(0.0, eventSeconds / secondsPerBeat);
-                    aftertouch.noteNumber = juce::jlimit(0, 127, msg.getNoteNumber());
-                    aftertouch.pressure = static_cast<uint8_t>(juce::jlimit(0, 127, msg.getAfterTouchValue()));
-                    polyAftertouchEvents.push_back(aftertouch);
-                }
-                else if (msg.isProgramChange())
-                {
-                    MidiProgramChangeEvent program;
-                    program.beat = juce::jmax(0.0, eventSeconds / secondsPerBeat);
-                    program.bankMsb = activeBankMsb[static_cast<size_t>(channel)];
-                    program.bankLsb = activeBankLsb[static_cast<size_t>(channel)];
-                    program.program = juce::jlimit(0, 127, msg.getProgramChangeNumber());
-                    programChangeEvents.push_back(program);
-                }
-                else if (msg.getRawDataSize() >= 1 && !msg.isMetaEvent())
-                {
-                    const uint8_t* data = msg.getRawData();
-                    MidiRawEvent raw;
-                    raw.beat = juce::jmax(0.0, eventSeconds / secondsPerBeat);
-                    raw.status = data[0];
-                    raw.data1 = msg.getRawDataSize() > 1 ? data[1] : 0;
-                    raw.data2 = msg.getRawDataSize() > 2 ? data[2] : 0;
-                    rawEvents.push_back(raw);
-                }
-            }
-
-            for (int ch = 0; ch < 16; ++ch)
-            {
-                for (int note = 0; note < 128; ++note)
-                {
-                    if (!active[static_cast<size_t>(ch)][static_cast<size_t>(note)])
-                        continue;
-                    const double startSeconds = activeStartSeconds[static_cast<size_t>(ch)][static_cast<size_t>(note)];
-                    const double endSeconds = juce::jmax(startSeconds + 0.01, trackEndSeconds);
-                    TimelineEvent ev;
-                    ev.startBeat = juce::jmax(0.0, startSeconds / secondsPerBeat);
-                    ev.durationBeats = juce::jmax(0.0625, (endSeconds - startSeconds) / secondsPerBeat);
-                    ev.noteNumber = note;
-                    ev.velocity = activeVelocity[static_cast<size_t>(ch)][static_cast<size_t>(note)];
-                    events.push_back(ev);
-                }
-            }
-        }
-
-        if (events.empty() && ccEvents.empty() && pitchBendEvents.empty()
-            && channelPressureEvents.empty() && polyAftertouchEvents.empty()
-            && programChangeEvents.empty() && rawEvents.empty())
-            return false;
-
-        std::sort(events.begin(), events.end(),
-                  [](const TimelineEvent& a, const TimelineEvent& b)
-                  {
-                      if (std::abs(a.startBeat - b.startBeat) > 1.0e-6)
-                          return a.startBeat < b.startBeat;
-                      return a.noteNumber < b.noteNumber;
-                  });
-        std::sort(ccEvents.begin(), ccEvents.end(),
-                  [](const MidiCCEvent& a, const MidiCCEvent& b)
-                  {
-                      if (std::abs(a.beat - b.beat) > 1.0e-6)
-                          return a.beat < b.beat;
-                      return a.controller < b.controller;
-                  });
-        std::sort(pitchBendEvents.begin(), pitchBendEvents.end(),
-                  [](const MidiPitchBendEvent& a, const MidiPitchBendEvent& b) { return a.beat < b.beat; });
-        std::sort(channelPressureEvents.begin(), channelPressureEvents.end(),
-                  [](const MidiChannelPressureEvent& a, const MidiChannelPressureEvent& b) { return a.beat < b.beat; });
-        std::sort(polyAftertouchEvents.begin(), polyAftertouchEvents.end(),
-                  [](const MidiPolyAftertouchEvent& a, const MidiPolyAftertouchEvent& b) { return a.beat < b.beat; });
-        std::sort(programChangeEvents.begin(), programChangeEvents.end(),
-                  [](const MidiProgramChangeEvent& a, const MidiProgramChangeEvent& b) { return a.beat < b.beat; });
-        std::sort(rawEvents.begin(), rawEvents.end(),
-                  [](const MidiRawEvent& a, const MidiRawEvent& b) { return a.beat < b.beat; });
-
-        double endBeat = 0.0;
-        for (const auto& ev : events)
-            endBeat = juce::jmax(endBeat, ev.startBeat + juce::jmax(0.0625, ev.durationBeats));
-        if (!ccEvents.empty())
-            endBeat = juce::jmax(endBeat, ccEvents.back().beat + 0.25);
-        if (!pitchBendEvents.empty())
-            endBeat = juce::jmax(endBeat, pitchBendEvents.back().beat + 0.25);
-        if (!channelPressureEvents.empty())
-            endBeat = juce::jmax(endBeat, channelPressureEvents.back().beat + 0.25);
-        if (!polyAftertouchEvents.empty())
-            endBeat = juce::jmax(endBeat, polyAftertouchEvents.back().beat + 0.25);
-        if (!programChangeEvents.empty())
-            endBeat = juce::jmax(endBeat, programChangeEvents.back().beat + 0.25);
-        if (!rawEvents.empty())
-            endBeat = juce::jmax(endBeat, rawEvents.back().beat + 0.25);
-
-        Clip clip;
-        clip.type = ClipType::MIDI;
-        clip.name = file.getFileNameWithoutExtension();
-        clip.startBeat = juce::jmax(0.0, startBeat);
-        clip.lengthBeats = juce::jmax(0.25, endBeat);
-        clip.trackIndex = resolvedTargetTrack;
-        clip.events = std::move(events);
-        clip.ccEvents = std::move(ccEvents);
-        clip.pitchBendEvents = std::move(pitchBendEvents);
-        clip.channelPressureEvents = std::move(channelPressureEvents);
-        clip.polyAftertouchEvents = std::move(polyAftertouchEvents);
-        clip.programChangeEvents = std::move(programChangeEvents);
-        clip.rawEvents = std::move(rawEvents);
-
-        ensureTrackHasPlayableInstrument(resolvedTargetTrack);
-        arrangement.push_back(std::move(clip));
-        outClipIndex = static_cast<int>(arrangement.size()) - 1;
-        return true;
+        outClipIndex = firstClipIndex;
+        return outClipIndex >= 0;
     }
 
     void MainComponent::resized()
@@ -13023,6 +12839,13 @@ namespace sampledex
             tempoEvents.push_back({ tempo.beat, tempo.bpm });
         rebuildTempoEventMap();
         setTempoBpm(bpm);
+
+        timeSignatureEvents = loadedProject.timeSignatureMap;
+        if (!timeSignatureEvents.empty())
+        {
+            const auto& firstSignature = timeSignatureEvents.front();
+            transport.setTimeSignature(firstSignature.numerator, firstSignature.denominator);
+        }
 
         std::vector<Clip> loadedArrangement = loadedProject.arrangement;
         relinkMissingAudioFiles(loadedArrangement, fileToLoad, loadWarnings);
