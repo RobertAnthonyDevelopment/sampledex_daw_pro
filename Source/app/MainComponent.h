@@ -143,9 +143,29 @@ namespace sampledex
             bool enableDither = true;
         };
 
+        class RecordingDiskThread : public juce::Thread
+        {
+        public:
+            explicit RecordingDiskThread(MainComponent& ownerRef)
+                : juce::Thread("Sampledex Audio Record Disk Writer"), owner(ownerRef) {}
+
+            void run() override
+            {
+                while (!threadShouldExit())
+                {
+                    owner.flushAudioTakeRingBuffers(false);
+                    wait(4);
+                }
+                owner.flushAudioTakeRingBuffers(true);
+            }
+
+        private:
+            MainComponent& owner;
+        };
+
         struct AudioTakeWriterState
         {
-            std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> writer;
+            std::unique_ptr<juce::AudioFormatWriter> writer;
             juce::File file;
             bool active = false;
             int inputPair = -1;
@@ -153,6 +173,12 @@ namespace sampledex
             double startBeat = 0.0;
             double sampleRate = 44100.0;
             int trackIndex = -1;
+            std::vector<float> ringLeft;
+            std::vector<float> ringRight;
+            std::unique_ptr<juce::AbstractFifo> ringFifo;
+            std::atomic<int64> droppedSamples { 0 };
+            std::atomic<bool> hadWriteError { false };
+            juce::String writeErrorMessage;
         };
 
         static constexpr int maxRealtimeTracks = 128;
@@ -325,6 +351,7 @@ namespace sampledex
         void stopCaptureRecordingAndCommit(bool stopTransportAfterCommit);
         void startAudioTakeWriters(double startBeat);
         void stopAudioTakeWriters(double endBeat, std::vector<Clip>& destinationClips);
+        void flushAudioTakeRingBuffers(bool flushAllPending);
         int chooseBestInputPairForCurrentBlock(int capturedInputChannels, int blockSamples) const;
         void setMonitorSafeMode(bool enabled);
         void calibrateInputMonitoring();
@@ -488,6 +515,9 @@ namespace sampledex
         int preRollBars = 1;
         int postRollBars = 1;
         double autoStopAfterBeat = -1.0;
+        bool recordOverdubEnabled = true;
+        double recordingLatencyCompensationBeats = 0.0;
+        std::atomic<int> recordingLatencyCompensationSamplesRt { 0 };
 
         std::array<juce::Reverb, static_cast<size_t>(auxBusCount)> auxReverbs;
         juce::Reverb::Parameters reverbParams;
@@ -687,7 +717,7 @@ namespace sampledex
         juce::SpinLock previewMidiBuffersLock;
         juce::MidiBuffer liveMidiBuffer;
         juce::MidiBuffer chordEngineOutputBuffer;
-        juce::TimeSliceThread audioRecordWriterThread { "Sampledex Audio Record Writer" };
+        RecordingDiskThread audioRecordDiskThread { *this };
         juce::TimeSliceThread streamingAudioReadThread { "Sampledex Streaming Reader" };
         std::map<juce::String, std::shared_ptr<StreamingClipSource>> streamingClipCache;
         std::array<AudioTakeWriterState, static_cast<size_t>(maxRealtimeTracks)> audioTakeWriters;
