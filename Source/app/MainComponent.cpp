@@ -11993,8 +11993,15 @@ namespace sampledex
                         continue;
                     }
 
-                    if (slot.encodedState.isNotEmpty())
-                        track->setPluginStateForSlot(slot.slotIndex, slot.encodedState);
+                    if (slot.encodedState.isNotEmpty()
+                        && !track->setPluginStateForSlot(slot.slotIndex, slot.encodedState))
+                    {
+                        loadWarnings.add("Track " + juce::String(i + 1)
+                                         + " plugin state restore failed ("
+                                         + (slot.description.name.isNotEmpty() ? slot.description.name
+                                                                               : slot.description.fileOrIdentifier)
+                                         + ").");
+                    }
                     track->setPluginSlotBypassed(slot.slotIndex, slot.bypassed);
                     recordLastLoadedPlugin(loadedDescription);
 
@@ -14151,8 +14158,12 @@ namespace sampledex
             else
             {
                 const auto instrumentState = sourceTrack->getPluginStateForSlot(Track::instrumentSlotIndex);
-                if (instrumentState.isNotEmpty())
-                    clonedTrack->setPluginStateForSlot(Track::instrumentSlotIndex, instrumentState);
+                if (instrumentState.isNotEmpty()
+                    && !clonedTrack->setPluginStateForSlot(Track::instrumentSlotIndex, instrumentState)
+                    && firstLoadError.isEmpty())
+                {
+                    firstLoadError = "Instrument state restore failed for duplicated track.";
+                }
                 clonedTrack->setPluginSlotBypassed(Track::instrumentSlotIndex,
                                                    sourceTrack->isPluginSlotBypassed(Track::instrumentSlotIndex));
                 recordLastLoadedPlugin(instrumentDescription);
@@ -14203,8 +14214,13 @@ namespace sampledex
             }
 
             const auto state = sourceTrack->getPluginStateForSlot(slot);
-            if (state.isNotEmpty())
-                clonedTrack->setPluginStateForSlot(slot, state);
+            if (state.isNotEmpty()
+                && !clonedTrack->setPluginStateForSlot(slot, state)
+                && firstLoadError.isEmpty())
+            {
+                firstLoadError = "Insert state restore failed for duplicated track (slot "
+                               + juce::String(slot + 1) + ").";
+            }
             clonedTrack->setPluginSlotBypassed(slot, sourceTrack->isPluginSlotBypassed(slot));
             recordLastLoadedPlugin(description);
         }
