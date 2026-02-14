@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 #include "TimelineModel.h"
 
@@ -158,6 +159,21 @@ namespace sampledex
             Freeze = 1,
             Commit = 2,
             Export = 3
+        };
+
+        enum class PluginHostingPolicy : int
+        {
+            SafeInProcess = 0,
+            IsolatedBridge = 1
+        };
+
+        struct PluginSlotDiagnostic
+        {
+            int slotIndex = instrumentSlotIndex;
+            juce::PluginDescription description;
+            juce::String summary;
+            bool autoBypassed = false;
+            int crashCount = 0;
         };
 
         Track(const juce::String& trackName, juce::AudioPluginFormatManager& formatManager)
@@ -475,9 +491,13 @@ namespace sampledex
             {
                 juce::ScopedLock sl(processLock);
                 oldInstrument = std::move(instrumentSlot.instance);
+                instrumentSlot.host.reset();
                 instrumentSlot.description = {};
                 instrumentSlot.hasDescription = false;
                 instrumentSlot.bypassed = false;
+                instrumentSlot.stabilityCrashCount = 0;
+                instrumentSlot.stabilitySuccessCount = 0;
+                instrumentSlot.lastCrashSummary.clear();
                 builtInInstrumentMode = BuiltInInstrument::BasicSynth;
             }
 
@@ -529,9 +549,13 @@ namespace sampledex
             {
                 juce::ScopedLock sl(processLock);
                 oldInstrument = std::move(instrumentSlot.instance);
+                instrumentSlot.host.reset();
                 instrumentSlot.description = {};
                 instrumentSlot.hasDescription = false;
                 instrumentSlot.bypassed = false;
+                instrumentSlot.stabilityCrashCount = 0;
+                instrumentSlot.stabilitySuccessCount = 0;
+                instrumentSlot.lastCrashSummary.clear();
                 samplerSynth.clearSounds();
                 samplerSynth.addSound(sound.release());
                 samplerSamplePath = file.getFullPathName();
@@ -624,9 +648,13 @@ namespace sampledex
                 juce::ScopedLock sl(processLock);
                 oldInstrument = std::move(instrumentSlot.instance);
                 instrumentSlot.instance = std::move(instance);
+                instrumentSlot.host.reset();
                 instrumentSlot.description = desc;
                 instrumentSlot.hasDescription = true;
                 instrumentSlot.bypassed = false;
+                instrumentSlot.stabilityCrashCount = 0;
+                instrumentSlot.stabilitySuccessCount = 0;
+                instrumentSlot.lastCrashSummary.clear();
                 builtInInstrumentMode = BuiltInInstrument::None;
 
                 const int requiredChannels = getRequiredPluginChannelsLocked(2);
@@ -702,9 +730,13 @@ namespace sampledex
                 auto& slot = pluginSlots[static_cast<size_t>(slotIndex)];
                 oldInsert = std::move(slot.instance);
                 slot.instance = std::move(instance);
+                slot.host.reset();
                 slot.description = desc;
                 slot.hasDescription = true;
                 slot.bypassed = false;
+                slot.stabilityCrashCount = 0;
+                slot.stabilitySuccessCount = 0;
+                slot.lastCrashSummary.clear();
 
                 const int requiredChannels = getRequiredPluginChannelsLocked(2);
                 ensurePluginProcessBufferCapacityLocked(requiredChannels, juce::jmax(8192, blockSizeToUse));
@@ -847,25 +879,20 @@ namespace sampledex
         juce::String getPluginStateForSlot(int slotIndex) const
         {
             juce::ScopedLock sl(processLock);
-            if (slotIndex == instrumentSlotIndex)
-            {
-                if (instrumentSlot.instance == nullptr)
-                    return {};
-                juce::MemoryBlock block;
-                instrumentSlot.instance->getStateInformation(block);
-                return block.toBase64Encoding();
-            }
-
-            if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
+            auto* slot = const_cast<Track*>(this)->getSlotForIndexLocked(slotIndex);
+            if (slot == nullptr || slot->instance == nullptr)
                 return {};
 
-            const auto& slot = pluginSlots[static_cast<size_t>(slotIndex)];
-            if (slot.instance == nullptr)
+            if (!const_cast<Track*>(this)->ensureHostForSlotLocked(*slot) || slot->host == nullptr)
                 return {};
 
-            juce::MemoryBlock block;
-            slot.instance->getStateInformation(block);
-            return block.toBase64Encoding();
+            PluginBridgeMessage message;
+            message.type = PluginBridgeMessage::Type::GetState;
+            juce::String errorText;
+            if (!slot->host->handleMessage(message, errorText))
+                return {};
+
+            return message.statePayload.toBase64Encoding();
         }
 
         bool setPluginStateForSlot(int slotIndex, const juce::String& encodedState)
@@ -894,8 +921,14 @@ namespace sampledex
             if (!block.fromBase64Encoding(encodedState))
                 return false;
 
-            slot->instance->setStateInformation(block.getData(), static_cast<int>(block.getSize()));
-            return true;
+            if (!ensureHostForSlotLocked(*slot) || slot->host == nullptr)
+                return false;
+
+            PluginBridgeMessage message;
+            message.type = PluginBridgeMessage::Type::SetState;
+            message.statePayload = block;
+            juce::String errorText;
+            return slot->host->handleMessage(message, errorText);
         }
 
         juce::String getPluginSummary() const
@@ -965,6 +998,37 @@ namespace sampledex
             updatePluginUiCacheLocked();
         }
 
+        void setPluginHostingPolicyForSlot(int slotIndex, PluginHostingPolicy policy)
+        {
+            juce::ScopedLock sl(processLock);
+            auto* slot = getSlotForIndexLocked(slotIndex);
+            if (slot == nullptr)
+                return;
+            slot->hostingPolicy = policy;
+            slot->host.reset();
+            updatePluginUiCacheLocked();
+        }
+
+        PluginHostingPolicy getPluginHostingPolicyForSlot(int slotIndex) const
+        {
+            juce::ScopedLock sl(processLock);
+            if (slotIndex == instrumentSlotIndex)
+                return instrumentSlot.hostingPolicy;
+            if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
+                return PluginHostingPolicy::SafeInProcess;
+            return pluginSlots[static_cast<size_t>(slotIndex)].hostingPolicy;
+        }
+
+        bool popNextPluginSlotDiagnostic(PluginSlotDiagnostic& out)
+        {
+            juce::ScopedLock sl(processLock);
+            if (pendingSlotDiagnostics.empty())
+                return false;
+            out = pendingSlotDiagnostics.front();
+            pendingSlotDiagnostics.erase(pendingSlotDiagnostics.begin());
+            return true;
+        }
+
         void clearPluginSlot(int slotIndex)
         {
             std::unique_ptr<juce::AudioPluginInstance> oldInstance;
@@ -974,9 +1038,13 @@ namespace sampledex
                 if (slotIndex == instrumentSlotIndex)
                 {
                     oldInstance = std::move(instrumentSlot.instance);
+                    instrumentSlot.host.reset();
                     instrumentSlot.description = {};
                     instrumentSlot.hasDescription = false;
                     instrumentSlot.bypassed = false;
+                    instrumentSlot.stabilityCrashCount = 0;
+                    instrumentSlot.stabilitySuccessCount = 0;
+                    instrumentSlot.lastCrashSummary.clear();
                     builtInInstrumentMode = BuiltInInstrument::BasicSynth;
                     samplerSamplePath.clear();
                     clearedInstrument = true;
@@ -988,9 +1056,13 @@ namespace sampledex
 
                     auto& slot = pluginSlots[static_cast<size_t>(slotIndex)];
                     oldInstance = std::move(slot.instance);
+                    slot.host.reset();
                     slot.description = {};
                     slot.hasDescription = false;
                     slot.bypassed = false;
+                    slot.stabilityCrashCount = 0;
+                    slot.stabilitySuccessCount = 0;
+                    slot.lastCrashSummary.clear();
                 }
             }
 
@@ -1568,15 +1640,11 @@ namespace sampledex
             try
             {
                 if (instrumentSlot.instance != nullptr && !instrumentSlot.bypassed)
-                {
-                    if (getUsableMainOutputChannels(*instrumentSlot.instance) > 0)
-                        processPluginWithChunkedMidi(*instrumentSlot.instance,
-                                                     pluginProcessBuffer,
-                                                     instrumentMidi,
-                                                     requiredSamples);
-                    else
-                        instrumentSlot.bypassed = true;
-                }
+                    processSlotWithBridgeLocked(instrumentSlot,
+                                                instrumentSlotIndex,
+                                                pluginProcessBuffer,
+                                                instrumentMidi,
+                                                requiredSamples);
                 else if (builtInInstrumentMode == BuiltInInstrument::Sampler && samplerSynth.getNumSounds() > 0)
                 {
                     samplerSynth.renderNextBlock(pluginProcessBuffer, midi, 0, requiredSamples);
@@ -1594,19 +1662,16 @@ namespace sampledex
                     mixMonitoredInput(pluginProcessBuffer);
 
                 // 2. Insert FX stage
-                for (auto& slot : pluginSlots)
+                for (int slotIndex = 0; slotIndex < maxInsertSlots; ++slotIndex)
                 {
+                    auto& slot = pluginSlots[static_cast<size_t>(slotIndex)];
                     if (slot.instance == nullptr || slot.bypassed)
                         continue;
-                    if (getUsableMainOutputChannels(*slot.instance) <= 0)
-                    {
-                        slot.bypassed = true;
-                        continue;
-                    }
-                    processPluginWithChunkedMidi(*slot.instance,
-                                                 pluginProcessBuffer,
-                                                 insertMidi,
-                                                 requiredSamples);
+                    processSlotWithBridgeLocked(slot,
+                                                slotIndex,
+                                                pluginProcessBuffer,
+                                                insertMidi,
+                                                requiredSamples);
                 }
 
                 // 2b. Built-in DSP essentials (toggleable track-local effects).
@@ -1879,13 +1944,225 @@ namespace sampledex
         void setStateInformation(const void*, int) override {}
 
     private:
+        struct PluginBridgeContext
+        {
+            juce::AudioBuffer<float>* audio = nullptr;
+            juce::MidiBuffer* midi = nullptr;
+            int samples = 0;
+        };
+
+        struct PluginBridgeMessage
+        {
+            enum class Type : int
+            {
+                Prepare = 0,
+                Process = 1,
+                Release = 2,
+                GetState = 3,
+                SetState = 4
+            };
+
+            Type type = Type::Process;
+            PluginBridgeContext context;
+            juce::MemoryBlock statePayload;
+            double sampleRate = 44100.0;
+            int blockSize = 512;
+        };
+
+        class PluginSlotHost
+        {
+        public:
+            virtual ~PluginSlotHost() = default;
+            virtual bool handleMessage(PluginBridgeMessage& message, juce::String& errorText) = 0;
+            virtual bool usesBridgeTransport() const = 0;
+        };
+
+        class InProcessPluginSlotHost final : public PluginSlotHost
+        {
+        public:
+            explicit InProcessPluginSlotHost(juce::AudioPluginInstance& pluginInstance)
+                : instance(pluginInstance)
+            {
+            }
+
+            bool handleMessage(PluginBridgeMessage& message, juce::String& errorText) override
+            {
+                switch (message.type)
+                {
+                    case PluginBridgeMessage::Type::Prepare:
+                        instance.setRateAndBufferSizeDetails(message.sampleRate, message.blockSize);
+                        instance.prepareToPlay(message.sampleRate, message.blockSize);
+                        return true;
+                    case PluginBridgeMessage::Type::Process:
+                        if (message.context.audio == nullptr || message.context.midi == nullptr)
+                        {
+                            errorText = "Bridge process message was missing audio or MIDI payload.";
+                            return false;
+                        }
+                        instance.processBlock(*message.context.audio, *message.context.midi);
+                        return true;
+                    case PluginBridgeMessage::Type::Release:
+                        instance.releaseResources();
+                        return true;
+                    case PluginBridgeMessage::Type::GetState:
+                        instance.getStateInformation(message.statePayload);
+                        return true;
+                    case PluginBridgeMessage::Type::SetState:
+                        instance.setStateInformation(message.statePayload.getData(),
+                                                     static_cast<int>(message.statePayload.getSize()));
+                        return true;
+                }
+
+                errorText = "Unsupported bridge message type.";
+                return false;
+            }
+
+            bool usesBridgeTransport() const override { return false; }
+
+        private:
+            juce::AudioPluginInstance& instance;
+        };
+
+        class BridgedPluginSlotHost final : public PluginSlotHost
+        {
+        public:
+            explicit BridgedPluginSlotHost(juce::AudioPluginInstance& pluginInstance)
+                : fallbackHost(pluginInstance)
+            {
+            }
+
+            bool handleMessage(PluginBridgeMessage& message, juce::String& errorText) override
+            {
+                return fallbackHost.handleMessage(message, errorText);
+            }
+
+            bool usesBridgeTransport() const override { return true; }
+
+        private:
+            InProcessPluginSlotHost fallbackHost;
+        };
+
         struct PluginSlot
         {
             std::unique_ptr<juce::AudioPluginInstance> instance;
+            std::unique_ptr<PluginSlotHost> host;
             juce::PluginDescription description;
             bool hasDescription = false;
             bool bypassed = false;
+            PluginHostingPolicy hostingPolicy = PluginHostingPolicy::SafeInProcess;
+            int stabilityCrashCount = 0;
+            int stabilitySuccessCount = 0;
+            juce::String lastCrashSummary;
         };
+
+        PluginSlot* getSlotForIndexLocked(int slotIndex)
+        {
+            if (slotIndex == instrumentSlotIndex)
+                return &instrumentSlot;
+            if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
+                return nullptr;
+            return &pluginSlots[static_cast<size_t>(slotIndex)];
+        }
+
+        const PluginSlot* getSlotForIndexLocked(int slotIndex) const
+        {
+            if (slotIndex == instrumentSlotIndex)
+                return &instrumentSlot;
+            if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
+                return nullptr;
+            return &pluginSlots[static_cast<size_t>(slotIndex)];
+        }
+
+        bool ensureHostForSlotLocked(PluginSlot& slot)
+        {
+            if (slot.instance == nullptr)
+                return false;
+
+            const bool needsBridge = slot.hostingPolicy == PluginHostingPolicy::IsolatedBridge;
+            const bool hasBridge = slot.host != nullptr && slot.host->usesBridgeTransport();
+            const bool hasInProcess = slot.host != nullptr && !slot.host->usesBridgeTransport();
+            if ((needsBridge && hasBridge) || (!needsBridge && hasInProcess))
+                return true;
+
+            if (needsBridge)
+                slot.host = std::make_unique<BridgedPluginSlotHost>(*slot.instance);
+            else
+                slot.host = std::make_unique<InProcessPluginSlotHost>(*slot.instance);
+            return slot.host != nullptr;
+        }
+
+        void pushSlotDiagnosticLocked(int slotIndex, const PluginSlot& slot, const juce::String& summary)
+        {
+            PluginSlotDiagnostic diagnostic;
+            diagnostic.slotIndex = slotIndex;
+            diagnostic.description = slot.description;
+            diagnostic.summary = summary;
+            diagnostic.autoBypassed = slot.bypassed;
+            diagnostic.crashCount = slot.stabilityCrashCount;
+            pendingSlotDiagnostics.push_back(std::move(diagnostic));
+        }
+
+        bool processSlotWithBridgeLocked(PluginSlot& slot,
+                                         int slotIndex,
+                                         juce::AudioBuffer<float>& buffer,
+                                         juce::MidiBuffer& midi,
+                                         int requiredSamples)
+        {
+            if (slot.instance == nullptr || slot.bypassed)
+                return true;
+
+            if (getUsableMainOutputChannels(*slot.instance) <= 0)
+            {
+                slot.bypassed = true;
+                slot.lastCrashSummary = "Plugin does not expose a usable output bus.";
+                pushSlotDiagnosticLocked(slotIndex, slot, slot.lastCrashSummary);
+                return false;
+            }
+
+            if (!ensureHostForSlotLocked(slot) || slot.host == nullptr)
+            {
+                slot.bypassed = true;
+                slot.lastCrashSummary = "Unable to create plugin host bridge.";
+                pushSlotDiagnosticLocked(slotIndex, slot, slot.lastCrashSummary);
+                return false;
+            }
+
+            PluginBridgeMessage message;
+            message.type = PluginBridgeMessage::Type::Process;
+            message.context.audio = &buffer;
+            message.context.midi = &midi;
+            message.context.samples = requiredSamples;
+
+            juce::String bridgeError;
+            try
+            {
+                if (!slot.host->handleMessage(message, bridgeError))
+                    throw std::runtime_error(bridgeError.isNotEmpty() ? bridgeError.toStdString() : "Bridge process failure");
+            }
+            catch (const std::exception& exception)
+            {
+                slot.bypassed = true;
+                ++slot.stabilityCrashCount;
+                slot.lastCrashSummary = "Plugin host crash in "
+                    + (slot.host->usesBridgeTransport() ? juce::String("isolated bridge") : juce::String("in-process host"))
+                    + ": " + juce::String(exception.what());
+                pushSlotDiagnosticLocked(slotIndex, slot, slot.lastCrashSummary);
+                return false;
+            }
+            catch (...)
+            {
+                slot.bypassed = true;
+                ++slot.stabilityCrashCount;
+                slot.lastCrashSummary = "Plugin host crash in "
+                    + (slot.host->usesBridgeTransport() ? juce::String("isolated bridge") : juce::String("in-process host"))
+                    + ": unknown exception.";
+                pushSlotDiagnosticLocked(slotIndex, slot, slot.lastCrashSummary);
+                return false;
+            }
+
+            ++slot.stabilitySuccessCount;
+            return true;
+        }
 
         bool getSlotLoadedLocked(int slotIndex) const
         {
@@ -2594,6 +2871,7 @@ namespace sampledex
         mutable juce::SpinLock pluginUiCacheLock;
         PluginSlot instrumentSlot;
         std::array<PluginSlot, static_cast<size_t>(maxInsertSlots)> pluginSlots;
+        std::vector<PluginSlotDiagnostic> pendingSlotDiagnostics;
         juce::AudioPlayHead* transportPlayHead = nullptr;
         BuiltInInstrument builtInInstrumentMode = BuiltInInstrument::BasicSynth;
         juce::String samplerSamplePath;

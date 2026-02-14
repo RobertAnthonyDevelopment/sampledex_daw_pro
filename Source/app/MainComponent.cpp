@@ -2964,6 +2964,7 @@ namespace sampledex
         pluginScanDeadMansPedalFile = appDataDir.getChildFile("plugin_scan_dead_mans_pedal.txt");
         pluginSessionGuardFile = appDataDir.getChildFile("plugin_session_guard.json");
         quarantinedPluginsFile = appDataDir.getChildFile("plugin_quarantine.txt");
+        pluginStabilityFile = appDataDir.getChildFile("plugin_stability.json");
         midiLearnMappingsFile = appDataDir.getChildFile("midi_learn_mappings.txt");
         toolbarLayoutSettingsFile = appDataDir.getChildFile("toolbar_layout.json");
         autosaveProjectFile = appDataDir.getChildFile("recovery.sampledex");
@@ -2977,6 +2978,7 @@ namespace sampledex
             if (xml) knownPluginList.recreateFromXml(*xml);
         }
         loadQuarantinedPlugins();
+        loadPluginStabilityStats();
         handleUncleanPluginSessionRecovery();
         writePluginSessionGuard(false);
         loadMidiLearnMappings();
@@ -4437,6 +4439,7 @@ namespace sampledex
                 ProjectSerializer::PluginSlotState slotState;
                 slotState.slotIndex = slot;
                 slotState.bypassed = track->isPluginSlotBypassed(slot);
+                slotState.hostingPolicy = static_cast<int>(track->getPluginHostingPolicyForSlot(slot));
                 slotState.encodedState = track->getPluginStateForSlot(slot);
                 slotState.hasDescription = track->getPluginDescriptionForSlot(slot, slotState.description);
                 state.pluginSlots.push_back(std::move(slotState));
@@ -10185,6 +10188,126 @@ namespace sampledex
         juce::ignoreUnused(quarantinedPluginsFile.replaceWithText(sorted.joinIntoString("\n")));
     }
 
+    void MainComponent::loadPluginStabilityStats()
+    {
+        pluginStabilityById.clear();
+        if (!pluginStabilityFile.existsAsFile())
+            return;
+
+        const auto parsed = juce::JSON::parse(pluginStabilityFile.loadFileAsString());
+        auto* root = parsed.getDynamicObject();
+        if (root == nullptr)
+            return;
+
+        if (auto* entries = root->getProperty("entries").getArray())
+        {
+            for (const auto& item : *entries)
+            {
+                auto* obj = item.getDynamicObject();
+                if (obj == nullptr)
+                    continue;
+                const auto identity = obj->getProperty("id").toString();
+                if (identity.isEmpty())
+                    continue;
+
+                PluginStabilityStats stats;
+                stats.crashCount = static_cast<int>(obj->getProperty("crashCount"));
+                stats.successCount = static_cast<int>(obj->getProperty("successCount"));
+                stats.lastCrashSummary = obj->getProperty("lastCrashSummary").toString();
+                pluginStabilityById[identity] = stats;
+            }
+        }
+    }
+
+    void MainComponent::savePluginStabilityStats() const
+    {
+        auto root = std::make_unique<juce::DynamicObject>();
+        juce::Array<juce::var> entries;
+        for (const auto& [identity, stats] : pluginStabilityById)
+        {
+            auto item = std::make_unique<juce::DynamicObject>();
+            item->setProperty("id", identity);
+            item->setProperty("crashCount", stats.crashCount);
+            item->setProperty("successCount", stats.successCount);
+            item->setProperty("lastCrashSummary", stats.lastCrashSummary);
+            entries.add(juce::var(item.release()));
+        }
+        root->setProperty("entries", juce::var(entries));
+        juce::ignoreUnused(pluginStabilityFile.replaceWithText(juce::JSON::toString(juce::var(root.release()), true)));
+    }
+
+    Track::PluginHostingPolicy MainComponent::preferredHostingPolicyForPlugin(const juce::PluginDescription& desc) const
+    {
+        const auto identity = getPluginIdentity(desc);
+        if (identity.isEmpty())
+            return Track::PluginHostingPolicy::SafeInProcess;
+
+        const auto found = pluginStabilityById.find(identity);
+        if (found == pluginStabilityById.end())
+            return Track::PluginHostingPolicy::SafeInProcess;
+
+        return found->second.crashCount > 0
+            ? Track::PluginHostingPolicy::IsolatedBridge
+            : Track::PluginHostingPolicy::SafeInProcess;
+    }
+
+    void MainComponent::updatePluginStabilityForDiagnostic(const Track::PluginSlotDiagnostic& diagnostic)
+    {
+        if (!pluginSafetyGuardsEnabled)
+            return;
+
+        const auto identity = getPluginIdentity(diagnostic.description);
+        if (identity.isEmpty())
+            return;
+
+        auto& stats = pluginStabilityById[identity];
+        if (diagnostic.autoBypassed)
+            stats.crashCount = juce::jmax(stats.crashCount + 1, diagnostic.crashCount);
+        else
+            ++stats.successCount;
+        stats.lastCrashSummary = diagnostic.summary;
+        savePluginStabilityStats();
+
+        if (diagnostic.autoBypassed && stats.crashCount >= 2)
+            quarantinePlugin(diagnostic.description, diagnostic.summary);
+    }
+
+    void MainComponent::drainTrackPluginDiagnostics()
+    {
+        juce::StringArray notices;
+        for (int trackIndex = 0; trackIndex < tracks.size(); ++trackIndex)
+        {
+            auto* track = tracks[trackIndex];
+            if (track == nullptr)
+                continue;
+
+            Track::PluginSlotDiagnostic diagnostic;
+            while (track->popNextPluginSlotDiagnostic(diagnostic))
+            {
+                updatePluginStabilityForDiagnostic(diagnostic);
+                if (!diagnostic.autoBypassed)
+                    continue;
+
+                const auto slotName = diagnostic.slotIndex == Track::instrumentSlotIndex
+                    ? juce::String("instrument")
+                    : juce::String("insert ") + juce::String(diagnostic.slotIndex + 1);
+
+                notices.add("Track " + juce::String(trackIndex + 1)
+                            + " (" + track->getTrackName() + ") " + slotName
+                            + " was auto-bypassed after a plugin host failure.\n"
+                            + (diagnostic.summary.isNotEmpty() ? diagnostic.summary
+                                                               : juce::String("No additional diagnostic information.")));
+            }
+        }
+
+        if (!notices.isEmpty())
+        {
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                   "Plugin Host Protection",
+                                                   notices.joinIntoString("\n\n"));
+        }
+    }
+
     void MainComponent::quarantinePlugin(const juce::PluginDescription& desc, const juce::String& reason)
     {
         if (!pluginSafetyGuardsEnabled)
@@ -12717,6 +12840,9 @@ namespace sampledex
                     bool loaded = false;
                     juce::PluginDescription loadedDescription;
                     const bool isInstrumentSlot = slot.slotIndex == Track::instrumentSlotIndex;
+                    track->setPluginHostingPolicyForSlot(
+                        slot.slotIndex,
+                        static_cast<Track::PluginHostingPolicy>(juce::jlimit(0, 1, slot.hostingPolicy)));
 
                     for (const auto& candidate : candidates)
                     {
@@ -13209,6 +13335,7 @@ namespace sampledex
 
         updateDetectedSyncSource();
         applyFeedbackSafetyIfRequested();
+        drainTrackPluginDiagnostics();
         if (builtInMonitorSafetyNoticeRequestedRt.exchange(false, std::memory_order_relaxed)
             && !builtInMonitorSafetyNoticeShown)
         {
@@ -16053,6 +16180,8 @@ namespace sampledex
                                    return;
                                }
 
+                               track->setPluginHostingPolicyForSlot(slotIndex,
+                                                                    preferredHostingPolicyForPlugin(loadedDescription));
                                recordLastLoadedPlugin(loadedDescription);
                                refreshChannelRackWindow();
                                openPluginEditorWindowForTrack(targetTrackIndex, slotIndex);
