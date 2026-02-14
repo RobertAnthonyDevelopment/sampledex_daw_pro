@@ -1196,6 +1196,8 @@ namespace sampledex
             builtInGateEnvelope = 0.0f;
             builtInDelayWritePosition = 0;
             builtInDelayLastSampleRate = juce::jmax(1.0, sampleRate);
+            startupRampDurationSamples = juce::jmax(1, juce::roundToInt(sampleRate * 0.02));
+            startupRampSamplesRemaining = startupRampDurationSamples;
             prepareBuiltInEffectsLocked(sampleRate, samplesPerBlock);
 
             if (instrumentSlot.instance)
@@ -1714,6 +1716,30 @@ namespace sampledex
             // Pre-insert monitor mode keeps live input dry (bypasses insert chain + track EQ).
             if (monitorTap == MonitorTapMode::PreInserts)
                 mixMonitoredInput(mainBuffer);
+
+            if (startupRampSamplesRemaining > 0)
+            {
+                const int sampleCount = mainBuffer.getNumSamples();
+                const int channelCount = mainBuffer.getNumChannels();
+                const int rampStartRemaining = startupRampSamplesRemaining;
+                const int rampSamplesToApply = juce::jmin(rampStartRemaining, sampleCount);
+
+                for (int ch = 0; ch < channelCount; ++ch)
+                {
+                    auto* write = mainBuffer.getWritePointer(ch);
+                    if (write == nullptr)
+                        continue;
+
+                    for (int i = 0; i < rampSamplesToApply; ++i)
+                    {
+                        const float gain = static_cast<float>(startupRampDurationSamples - rampStartRemaining + i + 1)
+                                           / static_cast<float>(juce::jmax(1, startupRampDurationSamples));
+                        write[i] *= juce::jlimit(0.0f, 1.0f, gain);
+                    }
+                }
+
+                startupRampSamplesRemaining = juce::jmax(0, rampStartRemaining - sampleCount);
+            }
 
             // 5. Mute
             const float currentSend = sendLevel.load(std::memory_order_relaxed);
@@ -2370,6 +2396,8 @@ namespace sampledex
         std::array<float, 2> monitorDcPrevOutput { 0.0f, 0.0f };
         double preparedSampleRate = 44100.0;
         int preparedBlockSize = 512;
+        int startupRampDurationSamples = 1;
+        int startupRampSamplesRemaining = 0;
         juce::AudioBuffer<float> pluginProcessBuffer;
         juce::AudioBuffer<float> sendTapBuffer;
         juce::AudioBuffer<float> lastSuccessfulOutputBuffer;
