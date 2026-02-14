@@ -185,6 +185,12 @@ namespace
         return inSample * fade;
     }
 
+    static inline float applyEqualPowerFade(float linearFade) noexcept
+    {
+        const float clamped = juce::jlimit(0.0f, 1.0f, linearFade);
+        return std::sin(clamped * static_cast<float>(juce::MathConstants<double>::halfPi));
+    }
+
     static inline float processSoftClipOversampled2x(float sample,
                                                      float drive,
                                                      float normaliser,
@@ -6785,11 +6791,19 @@ namespace sampledex
                             break;
                         float fadeGain = 1.0f;
                         if (fadeInBeats > 0.0)
-                            fadeGain = juce::jmin(fadeGain, static_cast<float>(juce::jlimit(0.0, 1.0, beatInClip / fadeInBeats)));
+                        {
+                            const float fadeInLinear = static_cast<float>(juce::jlimit(0.0,
+                                                                                       1.0,
+                                                                                       beatInClip / fadeInBeats));
+                            fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeInLinear));
+                        }
                         if (fadeOutBeats > 0.0)
                         {
                             const double beatsToEnd = juce::jmax(0.0, clip.lengthBeats - beatInClip);
-                            fadeGain = juce::jmin(fadeGain, static_cast<float>(juce::jlimit(0.0, 1.0, beatsToEnd / fadeOutBeats)));
+                            const float fadeOutLinear = static_cast<float>(juce::jlimit(0.0,
+                                                                                         1.0,
+                                                                                         beatsToEnd / fadeOutBeats));
+                            fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeOutLinear));
                         }
                         const float sampleGain = baseGain * fadeGain;
                         const double beatsPerSample = beatStep;
