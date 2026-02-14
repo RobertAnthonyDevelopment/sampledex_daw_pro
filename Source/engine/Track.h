@@ -1196,6 +1196,9 @@ namespace sampledex
             builtInGateEnvelope = 0.0f;
             builtInDelayWritePosition = 0;
             builtInDelayLastSampleRate = juce::jmax(1.0, sampleRate);
+            startupRampSamplesRemaining = juce::jlimit(0,
+                                                       8192,
+                                                       static_cast<int>(std::round(juce::jmax(1.0, sampleRate) * 0.02)));
             prepareBuiltInEffectsLocked(sampleRate, samplesPerBlock);
 
             if (instrumentSlot.instance)
@@ -1243,6 +1246,9 @@ namespace sampledex
 
             const int requiredChannels = getRequiredPluginChannelsLocked(2);
             ensurePluginProcessBufferCapacityLocked(requiredChannels, juce::jmax(8192, samplesPerBlock));
+            pluginProcessBuffer.clear();
+            sendTapBuffer.clear();
+            lastSuccessfulOutputBuffer.clear();
         }
 
         void releaseResources() override
@@ -1786,6 +1792,8 @@ namespace sampledex
                 copyToSendBus(mainBuffer);
             }
 
+            applyStartupRampLocked(mainBuffer);
+
             storePostFaderPeak(mainBuffer);
 
             // 9. Metering (post-fader/post-pan for real mixer feedback).
@@ -2309,6 +2317,32 @@ namespace sampledex
             cachedEqHighGainDb = high;
         }
 
+        void applyStartupRampLocked(juce::AudioBuffer<float>& target)
+        {
+            if (startupRampSamplesRemaining <= 0)
+                return;
+
+            const int sampleCount = target.getNumSamples();
+            if (sampleCount <= 0 || target.getNumChannels() <= 0)
+                return;
+
+            const int rampSamples = juce::jmin(sampleCount, startupRampSamplesRemaining);
+            const float startGain = startupRampGain;
+            const float progress = static_cast<float>(rampSamples)
+                                 / static_cast<float>(juce::jmax(1, startupRampSamplesRemaining));
+            const float endGain = startGain + ((1.0f - startGain) * progress);
+
+            for (int ch = 0; ch < target.getNumChannels(); ++ch)
+            {
+                target.applyGainRamp(ch, 0, rampSamples, startGain, 1.0f);
+                if (rampSamples < sampleCount)
+                    target.applyGain(ch, rampSamples, sampleCount - rampSamples, 1.0f);
+            }
+
+            startupRampSamplesRemaining -= rampSamples;
+            startupRampGain = (startupRampSamplesRemaining > 0) ? endGain : 1.0f;
+        }
+
         struct ActiveNote
         {
             double startBeat = 0.0;
@@ -2366,6 +2400,8 @@ namespace sampledex
         float prevLeftGain = 0.8f;
         float prevRightGain = 0.8f;
         float prevVolumeGain = 0.8f;
+        int startupRampSamplesRemaining = 0;
+        float startupRampGain = 0.0f;
         std::array<float, 2> monitorDcPrevInput { 0.0f, 0.0f };
         std::array<float, 2> monitorDcPrevOutput { 0.0f, 0.0f };
         double preparedSampleRate = 44100.0;
