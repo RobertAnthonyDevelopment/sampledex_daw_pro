@@ -584,9 +584,9 @@ namespace sampledex
             {
                 juce::ScopedLock sl(processLock);
                 sampleRateToUse = preparedSampleRate > 0.0 ? preparedSampleRate
-                                  : (this->getSampleRate() > 0.0 ? this->getSampleRate() : 44100.0);
+                                  : (juce::AudioProcessor::getSampleRate() > 0.0 ? juce::AudioProcessor::getSampleRate() : 44100.0);
                 blockSizeToUse = preparedBlockSize > 0 ? preparedBlockSize
-                                 : (this->getBlockSize() > 0 ? this->getBlockSize() : 512);
+                                 : (juce::AudioProcessor::getBlockSize() > 0 ? juce::AudioProcessor::getBlockSize() : 512);
                 playHeadToUse = transportPlayHead;
             }
 
@@ -661,9 +661,9 @@ namespace sampledex
             {
                 juce::ScopedLock sl(processLock);
                 sampleRateToUse = preparedSampleRate > 0.0 ? preparedSampleRate
-                                  : (this->getSampleRate() > 0.0 ? this->getSampleRate() : 44100.0);
+                                  : (juce::AudioProcessor::getSampleRate() > 0.0 ? juce::AudioProcessor::getSampleRate() : 44100.0);
                 blockSizeToUse = preparedBlockSize > 0 ? preparedBlockSize
-                                 : (this->getBlockSize() > 0 ? this->getBlockSize() : 512);
+                                 : (juce::AudioProcessor::getBlockSize() > 0 ? juce::AudioProcessor::getBlockSize() : 512);
                 playHeadToUse = transportPlayHead;
             }
 
@@ -2423,7 +2423,7 @@ namespace sampledex
                 return;
 
             const double sr = preparedSampleRate > 1.0 ? preparedSampleRate
-                                                       : (this->getSampleRate() > 1.0 ? this->getSampleRate() : 44100.0);
+                                                       : (juce::AudioProcessor::getSampleRate() > 1.0 ? juce::AudioProcessor::getSampleRate() : 44100.0);
             const double safeSr = juce::jmax(8000.0, sr);
             const double lowGain = juce::Decibels::decibelsToGain(low);
             const double midGain = juce::Decibels::decibelsToGain(mid);
