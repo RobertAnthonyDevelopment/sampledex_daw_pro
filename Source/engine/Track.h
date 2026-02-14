@@ -1188,6 +1188,7 @@ namespace sampledex
             prevLeftGain = volume.load();
             prevRightGain = volume.load();
             prevVolumeGain = volume.load();
+            prevSendGain = sendLevel.load(std::memory_order_relaxed);
             monitorDcPrevInput = { 0.0f, 0.0f };
             monitorDcPrevOutput = { 0.0f, 0.0f };
             fallbackSynth.setCurrentPlaybackSampleRate(sampleRate);
@@ -1727,7 +1728,28 @@ namespace sampledex
                 const int channelCount = juce::jmin(sourceBuffer.getNumChannels(), sendBuffer.getNumChannels());
                 const int sampleCount = juce::jmin(sourceBuffer.getNumSamples(), sendBuffer.getNumSamples());
                 for (int ch = 0; ch < channelCount; ++ch)
-                    sendBuffer.addFrom(ch, 0, sourceBuffer, ch, 0, sampleCount, currentSend);
+                {
+                    auto* dst = sendBuffer.getWritePointer(ch);
+                    const auto* src = sourceBuffer.getReadPointer(ch);
+                    if (dst == nullptr || src == nullptr)
+                        continue;
+
+                    if (sampleCount == 1)
+                    {
+                        dst[0] += src[0] * currentSend;
+                        continue;
+                    }
+
+                    const float gainStep = sampleCount > 1
+                        ? (currentSend - prevSendGain) / static_cast<float>(sampleCount - 1)
+                        : 0.0f;
+                    float gain = prevSendGain;
+                    for (int i = 0; i < sampleCount; ++i)
+                    {
+                        dst[i] += src[i] * gain;
+                        gain += gainStep;
+                    }
+                }
             };
 
             if (sendTap == SendTapMode::PreFader)
@@ -1773,6 +1795,7 @@ namespace sampledex
             prevLeftGain = leftGain;
             prevRightGain = rightGain;
             prevVolumeGain = vol;
+            prevSendGain = currentSend;
 
             // 8. Post-fader send routing
             if (sendTap == SendTapMode::PostFader
@@ -2366,6 +2389,7 @@ namespace sampledex
         float prevLeftGain = 0.8f;
         float prevRightGain = 0.8f;
         float prevVolumeGain = 0.8f;
+        float prevSendGain = 0.0f;
         std::array<float, 2> monitorDcPrevInput { 0.0f, 0.0f };
         std::array<float, 2> monitorDcPrevOutput { 0.0f, 0.0f };
         double preparedSampleRate = 44100.0;

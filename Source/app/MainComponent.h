@@ -470,6 +470,8 @@ namespace sampledex
         std::atomic<bool> closeRequestInProgress { false };
         std::atomic<bool> startupSafetyRampLoggedRt { false };
         std::atomic<bool> startupSafetyFaultLoggedRt { false };
+        std::atomic<int> startupSafetyRampEventsRt { 0 };
+        std::atomic<int> startupSafetyFaultEventsRt { 0 };
 
         juce::OwnedArray<Track> tracks;
         int selectedTrackIndex = 0;
@@ -645,6 +647,8 @@ namespace sampledex
         std::atomic<int> audioCallbackOverloadCountRt { 0 };
         std::atomic<float> audioCallbackLoadRt { 0.0f };
         std::atomic<int> xrunRecoveryBlocksRt { 0 };
+        std::atomic<int> inputTapUnderrunCountRt { 0 };
+        std::atomic<int> previewMidiLockMissCountRt { 0 };
         std::atomic<double> lastMidiClockMessageMs { -1.0 };
         std::atomic<double> lastMtcMessageMs { -1.0 };
         std::atomic<bool> midiOutputActiveRt { false };
@@ -754,6 +758,7 @@ namespace sampledex
         std::array<float, 2> outputDcPrevOutput { 0.0f, 0.0f };
         std::array<float, 2> masterLimiterPrevInput { 0.0f, 0.0f };
         std::array<float, 2> masterTruePeakMidpointPrevInput { 0.0f, 0.0f };
+        std::array<float, 2> outputBoundaryPrevSample { 0.0f, 0.0f };
         float masterLimiterGainState = 1.0f;
         bool wasTransportPlayingLastBlock = false;
         std::array<juce::AudioBuffer<float>, static_cast<size_t>(maxRealtimeTracks)> trackMainWorkBuffers;

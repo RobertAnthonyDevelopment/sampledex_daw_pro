@@ -6124,7 +6124,12 @@ namespace sampledex
         outputDcPrevOutput = { 0.0f, 0.0f };
         masterLimiterPrevInput = { 0.0f, 0.0f };
         masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
+        outputBoundaryPrevSample = { 0.0f, 0.0f };
         masterLimiterGainState = 1.0f;
+        inputTapUnderrunCountRt.store(0, std::memory_order_relaxed);
+        previewMidiLockMissCountRt.store(0, std::memory_order_relaxed);
+        startupSafetyRampEventsRt.store(0, std::memory_order_relaxed);
+        startupSafetyFaultEventsRt.store(0, std::memory_order_relaxed);
         wasTransportPlayingLastBlock = false;
         masterPhaseCorrelationRt.store(0.0f, std::memory_order_relaxed);
         masterLoudnessLufsRt.store(-120.0f, std::memory_order_relaxed);
@@ -6197,6 +6202,7 @@ namespace sampledex
             outputDcPrevOutput = { 0.0f, 0.0f };
             masterLimiterPrevInput = { 0.0f, 0.0f };
             masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
+            outputBoundaryPrevSample = { 0.0f, 0.0f };
             masterLimiterGainState = 1.0f;
             masterPeakMeterRt.store(masterPeakMeterRt.load(std::memory_order_relaxed) * 0.86f, std::memory_order_relaxed);
             masterRmsMeterRt.store(masterRmsMeterRt.load(std::memory_order_relaxed) * 0.82f, std::memory_order_relaxed);
@@ -6217,6 +6223,8 @@ namespace sampledex
             : 0;
         const int effectiveRequestedInputChannels = requestedInputChannels > 0 ? requestedInputChannels : tapChannels;
         const int capturedInputChannels = juce::jmax(0, juce::jmin(effectiveRequestedInputChannels, tapChannels));
+        if (!tapReady || tapSamples < bufferToFill.numSamples)
+            inputTapUnderrunCountRt.fetch_add(1, std::memory_order_relaxed);
 
         if (tapReady
             && capturedInputChannels > 0
@@ -6360,6 +6368,7 @@ namespace sampledex
         const double endBeat = blockRange.endBeat;
         const bool isPlaying = transport.playing();
         const bool chaseNotesThisBlock = isPlaying && !wasTransportPlayingLastBlock;
+        const bool transportStopThisBlock = !isPlaying && wasTransportPlayingLastBlock;
         applyAutomationForBlock(*snapshot, startBeat, isPlaying);
 
         const bool wrappedLoopBlock = blockRange.wrapped && transport.isLooping();
@@ -6476,6 +6485,10 @@ namespace sampledex
 
                 for (size_t i = static_cast<size_t>(activeTrackCount); i < previewMidiBuffers.size(); ++i)
                     previewMidiBuffers[i].clear();
+            }
+            else
+            {
+                previewMidiLockMissCountRt.fetch_add(1, std::memory_order_relaxed);
             }
         }
 
@@ -7233,14 +7246,62 @@ namespace sampledex
                     bufferToFill.buffer->addFrom(ch, bufferToFill.startSample, auxBus, ch, 0, bufferToFill.numSamples);
             }
         }
+
+        const bool applyTransportBoundaryFade = chaseNotesThisBlock || transportStopThisBlock || wrappedLoopBlock;
+        if (applyTransportBoundaryFade)
+        {
+            const int boundaryFadeSamples = juce::jmin(64, juce::jmax(1, bufferToFill.numSamples / 8));
+            for (int ch = 0; ch < outputChannels; ++ch)
+            {
+                auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                if (write == nullptr)
+                    continue;
+
+                if (chaseNotesThisBlock || wrappedLoopBlock)
+                {
+                    const float first = write[0];
+                    for (int i = 0; i < boundaryFadeSamples; ++i)
+                    {
+                        const float t = static_cast<float>(i + 1) / static_cast<float>(boundaryFadeSamples);
+                        write[i] = first * t;
+                    }
+                }
+
+                if (transportStopThisBlock)
+                {
+                    const float last = write[bufferToFill.numSamples - 1];
+                    for (int i = 0; i < boundaryFadeSamples; ++i)
+                    {
+                        const int idx = bufferToFill.numSamples - boundaryFadeSamples + i;
+                        const float t = 1.0f - (static_cast<float>(i + 1) / static_cast<float>(boundaryFadeSamples));
+                        write[idx] = last * t;
+                    }
+                }
+            }
+        }
+
+        const int continuityFadeSamples = juce::jmin(32, bufferToFill.numSamples);
+        for (int ch = 0; ch < juce::jmin(outputChannels, 2); ++ch)
+        {
+            auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+            if (write == nullptr)
+                continue;
+
+            const float previousTail = outputBoundaryPrevSample[static_cast<size_t>(ch)];
+            const float currentHead = write[0];
+            for (int i = 0; i < continuityFadeSamples; ++i)
+            {
+                const float t = static_cast<float>(i + 1) / static_cast<float>(continuityFadeSamples);
+                write[i] = previousTail + ((currentHead - previousTail) * t);
+            }
+            outputBoundaryPrevSample[static_cast<size_t>(ch)] = write[bufferToFill.numSamples - 1];
+        }
+
         const int startupRampRemaining = startupOutputRampSamplesRemainingRt.load(std::memory_order_relaxed);
         if (startupRampRemaining > 0)
         {
             if (!startupSafetyRampLoggedRt.exchange(true, std::memory_order_relaxed))
-            {
-                juce::Logger::writeToLog("Startup safety: output ramp active (samples remaining="
-                                         + juce::String(startupRampRemaining) + ")");
-            }
+                startupSafetyRampEventsRt.fetch_add(1, std::memory_order_relaxed);
             const int startupRampTotal = juce::jmax(1, startupOutputRampTotalSamplesRt.load(std::memory_order_relaxed));
             const int nextRampRemaining = juce::jmax(0, startupRampRemaining - bufferToFill.numSamples);
             const float startGain = juce::jlimit(0.0f,
@@ -7398,9 +7459,7 @@ namespace sampledex
         if (severeOutputFault)
         {
             if (!startupSafetyFaultLoggedRt.exchange(true, std::memory_order_relaxed))
-            {
-                juce::Logger::writeToLog("Startup/output safety: severe output fault detected; safety mute + guard extension applied.");
-            }
+                startupSafetyFaultEventsRt.fetch_add(1, std::memory_order_relaxed);
             audioGuardDropCountRt.fetch_add(1, std::memory_order_relaxed);
             feedbackAutoMuteRequestedRt.store(true, std::memory_order_relaxed);
             const int currentMuteBlocks = outputSafetyMuteBlocksRt.load(std::memory_order_relaxed);
@@ -7556,6 +7615,7 @@ namespace sampledex
         {
             audioGuardDropCountRt.fetch_add(1, std::memory_order_relaxed);
             audioXrunCountRt.fetch_add(1, std::memory_order_relaxed);
+            inputTapUnderrunCountRt.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
@@ -7564,6 +7624,7 @@ namespace sampledex
         {
             audioGuardDropCountRt.fetch_add(1, std::memory_order_relaxed);
             audioXrunCountRt.fetch_add(1, std::memory_order_relaxed);
+            inputTapUnderrunCountRt.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
@@ -7618,6 +7679,7 @@ namespace sampledex
         outputDcPrevOutput = { 0.0f, 0.0f };
         masterLimiterPrevInput = { 0.0f, 0.0f };
         masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
+        outputBoundaryPrevSample = { 0.0f, 0.0f };
         masterLimiterGainState = 1.0f;
         lastAudioDeviceNameSeen = device->getName();
         refreshInputDeviceSafetyState();
@@ -7642,6 +7704,7 @@ namespace sampledex
         outputDcPrevOutput = { 0.0f, 0.0f };
         masterLimiterPrevInput = { 0.0f, 0.0f };
         masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
+        outputBoundaryPrevSample = { 0.0f, 0.0f };
         masterLimiterGainState = 1.0f;
         for (auto& tapInfo : inputTapNumChannels)
             tapInfo.store(0, std::memory_order_relaxed);
@@ -13814,11 +13877,15 @@ namespace sampledex
         const int guardDrops = audioGuardDropCountRt.load(std::memory_order_relaxed);
         const int xrunCount = audioXrunCountRt.load(std::memory_order_relaxed);
         const int overloadCount = audioCallbackOverloadCountRt.load(std::memory_order_relaxed);
+        const int inputUnderruns = inputTapUnderrunCountRt.load(std::memory_order_relaxed);
+        const int midiLockMisses = previewMidiLockMissCountRt.load(std::memory_order_relaxed);
         const juce::String guardState = "GuardDrop " + juce::String(guardDrops);
         const juce::String perfState = "CB "
                                      + juce::String(callbackLoadPercent, 1) + "%"
                                      + " XR " + juce::String(xrunCount)
                                      + " OL " + juce::String(overloadCount)
+                                     + " IUR " + juce::String(inputUnderruns)
+                                     + " PML " + juce::String(midiLockMisses)
                                      + " LL " + (lowLatencyMode ? juce::String("ON") : juce::String("OFF"));
         const juce::String liveInState = "InCh " + juce::String(activeInputChannelCountRt.load(std::memory_order_relaxed));
         const juce::String monitorSafeState = monitorSafeMode ? "MonSafe ON" : "MonSafe OFF";
@@ -13850,6 +13917,20 @@ namespace sampledex
                 ? ("StartSafe G" + juce::String(startupGuardBlocksRemaining)
                    + " M" + juce::String(startupMuteBlocksRemaining))
                 : juce::String("StartSafe Idle");
+        static int previousStartupRampEvents = 0;
+        static int previousStartupFaultEvents = 0;
+        const int startupRampEvents = startupSafetyRampEventsRt.load(std::memory_order_relaxed);
+        const int startupFaultEvents = startupSafetyFaultEventsRt.load(std::memory_order_relaxed);
+        if (startupRampEvents > previousStartupRampEvents)
+        {
+            juce::Logger::writeToLog("Startup safety: output ramp active.");
+            previousStartupRampEvents = startupRampEvents;
+        }
+        if (startupFaultEvents > previousStartupFaultEvents)
+        {
+            juce::Logger::writeToLog("Startup/output safety: severe output fault detected; safety mute + guard extension applied.");
+            previousStartupFaultEvents = startupFaultEvents;
+        }
         const juce::String scanState = (pluginScanProcess != nullptr)
             ? ("Scan " + scanFormatDisplayName(activeScanFormat)
                + " "
