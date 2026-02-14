@@ -80,6 +80,27 @@ namespace sampledex
 
     enum class ClipType { MIDI, Audio };
 
+    enum class ClipStretchMode : int
+    {
+        Tape = 0,
+        BeatWarp = 1,
+        OneShot = 2
+    };
+
+    struct WarpMarker
+    {
+        double clipBeat = 0.0;
+        double sourceBeat = 0.0;
+        float strength = 1.0f;
+        bool transientAnchor = false;
+
+        bool operator==(const WarpMarker& other) const
+        {
+            return std::tie(clipBeat, sourceBeat, strength, transientAnchor)
+                == std::tie(other.clipBeat, other.sourceBeat, other.strength, other.transientAnchor);
+        }
+    };
+
     struct Clip
     {
         juce::String name;
@@ -105,6 +126,11 @@ namespace sampledex
         double crossfadeInBeats = 0.0;
         double crossfadeOutBeats = 0.0;
         double detectedTempoBpm = 0.0;
+        ClipStretchMode stretchMode = ClipStretchMode::Tape;
+        double originalTempoBpm = 0.0;
+        std::vector<WarpMarker> warpMarkers;
+        bool formantPreserve = false;
+        bool oneShot = false;
 
         bool operator==(const Clip& other) const
         {
@@ -124,7 +150,12 @@ namespace sampledex
                             fadeOutBeats,
                             crossfadeInBeats,
                             crossfadeOutBeats,
-                            detectedTempoBpm)
+                            detectedTempoBpm,
+                            stretchMode,
+                            originalTempoBpm,
+                            warpMarkers,
+                            formantPreserve,
+                            oneShot)
                 == std::tie(other.name,
                             other.type,
                             other.startBeat,
@@ -141,7 +172,12 @@ namespace sampledex
                             other.fadeOutBeats,
                             other.crossfadeInBeats,
                             other.crossfadeOutBeats,
-                            other.detectedTempoBpm);
+                            other.detectedTempoBpm,
+                            other.stretchMode,
+                            other.originalTempoBpm,
+                            other.warpMarkers,
+                            other.formantPreserve,
+                            other.oneShot);
         }
 
         // --- MIDI Helper ---
