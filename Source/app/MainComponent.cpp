@@ -12081,6 +12081,19 @@ namespace sampledex
         if (selectedFile.getFileExtension().isEmpty())
             selectedFile = selectedFile.withFileExtension(".sampledex");
 
+        const juce::File parentDir = selectedFile.getParentDirectory();
+        if (parentDir == juce::File())
+        {
+            errorMessage = "Invalid save location:\n" + selectedFile.getFullPathName();
+            return false;
+        }
+
+        if (!parentDir.exists() && !parentDir.createDirectory())
+        {
+            errorMessage = "Unable to create destination folder:\n" + parentDir.getFullPathName();
+            return false;
+        }
+
         if (!saveProjectStateToFile(selectedFile, errorMessage))
             return false;
 
@@ -12287,40 +12300,30 @@ namespace sampledex
                              : (tracks[juce::jlimit(0, tracks.size() - 1, selectedTrackIndex)]->getTrackName() + " Project"));
         const juce::File initialTarget = documentsDir.getChildFile(defaultName + ".sampledex");
 
-        projectFileChooser = std::make_unique<juce::FileChooser>(
-            "Save Project As",
-            initialTarget,
-            "*.sampledex;*.xml",
-            true);
+        juce::FileChooser chooser("Save Project As",
+                                  initialTarget,
+                                  "*.sampledex;*.xml",
+                                  true);
 
-        const auto flags = juce::FileBrowserComponent::saveMode
-                         | juce::FileBrowserComponent::canSelectFiles
-                         | juce::FileBrowserComponent::warnAboutOverwriting;
-        projectFileChooser->launchAsync(flags,
-                                        [this, quitNow, cancelClose](const juce::FileChooser& chooser)
-                                        {
-                                            const juce::File selectedFile = chooser.getResult();
-                                            projectFileChooser.reset();
-                                            if (selectedFile == juce::File{})
-                                            {
-                                                cancelClose("save-as-cancel");
-                                                return;
-                                            }
+        if (!chooser.browseForFileToSave(true))
+        {
+            cancelClose("save-as-cancel");
+            return;
+        }
 
-                                            juce::String error;
-                                            if (!saveProjectToFile(selectedFile, error))
-                                            {
-                                                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                                                                       "Save Project",
-                                                                                       error.isNotEmpty() ? error
-                                                                                                          : juce::String("Project save failed."));
-                                                cancelClose("save-as-failed");
-                                                return;
-                                            }
+        juce::String error;
+        if (!saveProjectToFile(chooser.getResult(), error))
+        {
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                   "Save Project",
+                                                   error.isNotEmpty() ? error
+                                                                      : juce::String("Project save failed."));
+            cancelClose("save-as-failed");
+            return;
+        }
 
-                                            logCloseDecision("save-as-success");
-                                            quitNow();
-                                        });
+        logCloseDecision("save-as-success");
+        quitNow();
     }
 
     bool MainComponent::handleApplicationCloseRequest()
