@@ -2227,16 +2227,32 @@ namespace sampledex
             };
 
             instance.enableAllBuses();
-            instance.disableNonMainBuses();
+            const auto currentLayout = instance.getBusesLayout();
+            if (instance.checkBusesLayoutSupported(currentLayout)
+                && instance.setBusesLayout(currentLayout))
+            {
+                if (instance.getMainBusNumOutputChannels() > 0)
+                    return true;
+            }
 
             if (isInstrument)
             {
-                if (!tryLayout(0, 2) && !tryLayout(0, 1))
+                if (!tryLayout(0, 2)
+                    && !tryLayout(0, 1)
+                    && !tryLayout(1, 2)
+                    && !tryLayout(2, 2)
+                    && !tryLayout(1, 1)
+                    && !tryLayout(2, 1))
                     return false;
                 return instance.getMainBusNumOutputChannels() > 0;
             }
 
-            if (!tryLayout(2, 2) && !tryLayout(1, 1) && !tryLayout(2, 1))
+            if (!tryLayout(2, 2)
+                && !tryLayout(1, 2)
+                && !tryLayout(1, 1)
+                && !tryLayout(2, 1)
+                && !tryLayout(0, 2)
+                && !tryLayout(0, 1))
                 return false;
 
             return instance.getMainBusNumOutputChannels() > 0;
