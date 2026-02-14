@@ -396,6 +396,12 @@ namespace sampledex
         ProjectSerializer::ProjectState buildCurrentProjectState() const;
         bool saveProjectStateToFile(const juce::File& destination, juce::String& errorMessage) const;
         bool saveProjectToFile(const juce::File& destination, juce::String& errorMessage);
+        using SaveCompletion = std::function<void(bool, const juce::String&)>;
+        bool startAsyncProjectSave(const juce::File& destination,
+                                   bool markProjectCleanOnSuccess,
+                                   bool clearRecoveryAutosaveOnSuccess,
+                                   SaveCompletion completion);
+        void stopAndJoinBackgroundThreads();
         void markProjectDirty();
         void maybeRunAutosave();
         void maybePromptRecoveryLoad();
@@ -468,6 +474,8 @@ namespace sampledex
         juce::PluginDescription lastLoadedPluginDescription;
         bool hasLastLoadedPluginDescription = false;
         std::atomic<bool> closeRequestInProgress { false };
+        std::atomic<bool> saveInProgress { false };
+        std::atomic<bool> shutdownThreadsStopped { false };
         std::atomic<bool> startupSafetyRampLoggedRt { false };
         std::atomic<bool> startupSafetyFaultLoggedRt { false };
         std::atomic<int> startupSafetyRampEventsRt { 0 };
