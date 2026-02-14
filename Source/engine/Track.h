@@ -1255,6 +1255,18 @@ namespace sampledex
                     slot.instance->releaseResources();
         }
 
+        void setPluginsNonRealtime(bool shouldBeNonRealtime)
+        {
+            juce::ScopedLock sl(processLock);
+            if (instrumentSlot.instance)
+                instrumentSlot.instance->setNonRealtime(shouldBeNonRealtime);
+            for (auto& slot : pluginSlots)
+            {
+                if (slot.instance)
+                    slot.instance->setNonRealtime(shouldBeNonRealtime);
+            }
+        }
+
         void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override
         {
             juce::AudioBuffer<float> dummySend;

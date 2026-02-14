@@ -492,6 +492,7 @@ namespace sampledex
         std::atomic<float> inputMonitorSafetyTrimRt { 1.0f };
         std::atomic<bool> usingLikelyBuiltInAudioRt { false };
         std::atomic<bool> panicRequestedRt { false };
+        std::atomic<bool> offlineRenderActiveRt { false };
         std::shared_ptr<const RealtimeStateSnapshot> realtimeSnapshot;
         std::vector<std::shared_ptr<const RealtimeStateSnapshot>> retiredRealtimeSnapshots;
         juce::CriticalSection retiredSnapshotLock;
