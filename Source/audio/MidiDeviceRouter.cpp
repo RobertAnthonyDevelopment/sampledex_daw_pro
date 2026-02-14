@@ -10,6 +10,12 @@ namespace sampledex
         closeOutput();
     }
 
+    bool MidiDeviceRouter::isVirtualOutputEnabled() const
+    {
+        const juce::ScopedLock lock (outputStateLock);
+        return virtualEnabled;
+    }
+
     std::vector<juce::MidiDeviceInfo> MidiDeviceRouter::getInputs() const
     {
 		// JUCE returns a juce::Array<MidiDeviceInfo> here in newer versions.
@@ -43,6 +49,7 @@ namespace sampledex
 
     void MidiDeviceRouter::closeOutput()
     {
+        const juce::ScopedLock lock (outputStateLock);
         output.reset();
         virtualOutput.reset();
         virtualEnabled = false;
@@ -63,17 +70,26 @@ namespace sampledex
 
     void MidiDeviceRouter::setOutputByIndex (int index)
     {
-        output.reset();
-
         auto outputs = getOutputs();
-        if (index < 0 || index >= (int) outputs.size())
-            return;
 
-        output = juce::MidiOutput::openDevice (outputs[(size_t) index].identifier);
+        std::unique_ptr<juce::MidiOutput> newOutput;
+        if (index < 0 || index >= (int) outputs.size())
+        {
+            const juce::ScopedLock lock (outputStateLock);
+            output.reset();
+            return;
+        }
+
+        newOutput = juce::MidiOutput::openDevice (outputs[(size_t) index].identifier);
+
+        const juce::ScopedLock lock (outputStateLock);
+        output = std::move (newOutput);
     }
 
     bool MidiDeviceRouter::setVirtualOutputEnabled (bool enabled, const juce::String& deviceName)
     {
+        const juce::ScopedLock lock (outputStateLock);
+
         if (enabled == virtualEnabled)
             return virtualEnabled;
 
@@ -101,6 +117,8 @@ namespace sampledex
 
     void MidiDeviceRouter::sendNow (const juce::MidiMessage& msg)
     {
+        const juce::ScopedLock lock (outputStateLock);
+
         if (virtualEnabled && virtualOutput != nullptr)
         {
             virtualOutput->sendMessageNow (msg);
@@ -113,6 +131,8 @@ namespace sampledex
 
     juce::String MidiDeviceRouter::getActiveOutputName() const
     {
+        const juce::ScopedLock lock (outputStateLock);
+
         if (virtualEnabled && virtualOutput != nullptr)
             return "Virtual: " + virtualOutput->getName();
 
