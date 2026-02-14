@@ -88,6 +88,11 @@ target_sources(SampledexChordLab PRIVATE
     Source/ui/PianoRollComponent.h
     Source/ui/StepSequencerComponent.h
     Source/ui/LcdDisplay.h
+    Source/ui/TransportBar.h
+    Source/ui/TrackList.h
+    Source/ui/TimelineView.h
+    Source/ui/MixerView.h
+    Source/ui/BrowserPanel.h
     Source/project/ProjectSerializer.h
     Source/engine/ScheduledMidiOutput.h
     Source/engine/RealtimeGraphScheduler.h

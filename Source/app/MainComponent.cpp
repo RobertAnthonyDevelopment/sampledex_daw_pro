@@ -2903,6 +2903,7 @@ namespace sampledex
         : safeModeStartup(startInSafeMode),
           timeline(transport, arrangement, tracks)
     {
+        setLookAndFeel(&theme::ThemeManager::instance().lookAndFeel());
         setWantsKeyboardFocus(true);
         // Avoid repeated microphone permission prompts and feedback on startup.
         setAudioChannels(0, 2);
@@ -3049,6 +3050,11 @@ namespace sampledex
             jumpToNextTempoEvent();
         };
         addAndMakeVisible(lcdDisplay.get());
+        addAndMakeVisible(transportBar);
+        addAndMakeVisible(browserPanel);
+        addAndMakeVisible(trackListView);
+        addAndMakeVisible(timelineView);
+        addAndMakeVisible(mixerView);
         
         addAndMakeVisible(playButton); playButton.onClick = [this] { togglePlayback(); };
         playButton.setTooltip("Start/stop transport. Shortcut: Space.");
@@ -3610,6 +3616,8 @@ namespace sampledex
         statusLabel.setTooltip("Current selection and quick shortcuts.");
         addAndMakeVisible(statusLabel);
 
+        timeline.setBufferedToImage(true);
+        bottomTabs.setBufferedToImage(true);
         addAndMakeVisible(timeline);
 
         timeline.onClipSelected = [this](Clip* c)
@@ -5318,6 +5326,7 @@ namespace sampledex
     }
 
     MainComponent::~MainComponent() { 
+        setLookAndFeel(nullptr);
         #if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(nullptr);
         #endif
@@ -5633,6 +5642,17 @@ namespace sampledex
                        static_cast<float>(bottomSplitterBounds.getCentreY()),
                        1.0f);
         }
+
+        const auto drawVerticalSplitter = [&g](const juce::Rectangle<int>& bounds, bool active)
+        {
+            if (bounds.isEmpty())
+                return;
+            g.setColour(active ? theme::Colours::accent().withAlpha(0.82f)
+                               : theme::Colours::gridLine().withAlpha(0.55f));
+            g.fillRect(bounds);
+        };
+        drawVerticalSplitter(browserSplitterBounds, draggingBrowserSplitter);
+        drawVerticalSplitter(mixerSplitterBounds, draggingMixerSplitter);
     }
 
     bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -5913,6 +5933,22 @@ namespace sampledex
 
     void MainComponent::mouseDown(const juce::MouseEvent& e)
     {
+        if (browserSplitterBounds.expanded(3, 0).contains(e.getPosition()))
+        {
+            draggingBrowserSplitter = true;
+            splitterDragMouseOffset = e.getPosition().x - browserSplitterBounds.getCentreX();
+            setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+            return;
+        }
+
+        if (mixerSplitterBounds.expanded(3, 0).contains(e.getPosition()))
+        {
+            draggingMixerSplitter = true;
+            splitterDragMouseOffset = e.getPosition().x - mixerSplitterBounds.getCentreX();
+            setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+            return;
+        }
+
         if (bottomSplitterBounds.expanded(0, 3).contains(e.getPosition()))
         {
             draggingBottomSplitter = true;
@@ -5923,6 +5959,29 @@ namespace sampledex
 
     void MainComponent::mouseDrag(const juce::MouseEvent& e)
     {
+        if (draggingBrowserSplitter)
+        {
+            const int contentWidth = getWidth();
+            const int splitterCenterX = e.getPosition().x - splitterDragMouseOffset;
+            browserPanelRatio = juce::jlimit(0.12f, 0.33f,
+                                             static_cast<float>(splitterCenterX) / static_cast<float>(juce::jmax(1, contentWidth)));
+            resized();
+            repaint(browserSplitterBounds.getUnion(browserSplitterBounds.expanded(12, 4)));
+            return;
+        }
+
+        if (draggingMixerSplitter)
+        {
+            const int contentWidth = getWidth();
+            const int splitterCenterX = e.getPosition().x - splitterDragMouseOffset;
+            const int rightWidth = getWidth() - splitterCenterX;
+            mixerDockRatio = juce::jlimit(0.14f, 0.34f,
+                                          static_cast<float>(rightWidth) / static_cast<float>(juce::jmax(1, contentWidth)));
+            resized();
+            repaint(mixerSplitterBounds.getUnion(mixerSplitterBounds.expanded(12, 4)));
+            return;
+        }
+
         if (!draggingBottomSplitter)
             return;
 
@@ -5940,6 +5999,15 @@ namespace sampledex
 
     void MainComponent::mouseUp(const juce::MouseEvent&)
     {
+        if (draggingBrowserSplitter || draggingMixerSplitter)
+        {
+            draggingBrowserSplitter = false;
+            draggingMixerSplitter = false;
+            setMouseCursor(juce::MouseCursor::NormalCursor);
+            repaint();
+            return;
+        }
+
         if (!draggingBottomSplitter)
             return;
 
@@ -5950,9 +6018,22 @@ namespace sampledex
 
     void MainComponent::mouseMove(const juce::MouseEvent& e)
     {
+        if (draggingBrowserSplitter || draggingMixerSplitter)
+        {
+            setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+            return;
+        }
+
         if (draggingBottomSplitter)
         {
             setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+            return;
+        }
+
+        if (browserSplitterBounds.expanded(3, 0).contains(e.getPosition())
+            || mixerSplitterBounds.expanded(3, 0).contains(e.getPosition()))
+        {
+            setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
             return;
         }
 
@@ -8254,10 +8335,11 @@ namespace sampledex
         auto r = getLocalBounds();
         const int topBarHeight = juce::jlimit(100, 136, juce::roundToInt(static_cast<float>(getHeight()) * 0.145f));
         auto topArea = r.removeFromTop(topBarHeight);
+        transportBar.setBounds(topArea.reduced(2));
         auto topRow = topArea.removeFromTop(topBarHeight / 2);
         auto secondRow = topArea;
 
-        const float uiScale = juce::jlimit(0.85f, 1.10f, static_cast<float>(getWidth()) / 1620.0f);
+        const float uiScale = theme::ThemeManager::instance().uiScaleFor(getWidth());
         const auto scaled = [uiScale](int baseWidth)
         {
             return juce::jmax(30, juce::roundToInt(static_cast<float>(baseWidth) * uiScale));
@@ -8473,7 +8555,34 @@ namespace sampledex
             statusLabel.setBounds({});
         }
 
-        const int totalRemaining = r.getHeight();
+        auto content = r;
+        const int splitterWidth = 8;
+        const int minBrowserWidth = 180;
+        const int minMixerWidth = 220;
+        const int maxBrowserWidth = juce::jmax(minBrowserWidth, content.getWidth() / 3);
+        const int desiredBrowserWidth = juce::roundToInt(browserPanelRatio * static_cast<float>(content.getWidth()));
+        const int browserWidth = juce::jlimit(minBrowserWidth, maxBrowserWidth, desiredBrowserWidth);
+
+        auto browserArea = content.removeFromLeft(browserWidth);
+        browserPanel.setBounds(browserArea);
+        browserSplitterBounds = content.removeFromLeft(splitterWidth);
+
+        const int maxMixerWidth = juce::jmax(minMixerWidth, content.getWidth() / 2);
+        const int desiredMixerWidth = juce::roundToInt(mixerDockRatio * static_cast<float>(getWidth()));
+        const int mixerWidth = juce::jlimit(minMixerWidth, maxMixerWidth, desiredMixerWidth);
+
+        auto centerArea = content.removeFromLeft(juce::jmax(280, content.getWidth() - mixerWidth - splitterWidth));
+        mixerSplitterBounds = content.removeFromLeft(splitterWidth);
+        auto mixerArea = content;
+        mixerView.setBounds(mixerArea.reduced(0, 2));
+
+        const int trackListWidth = juce::jlimit(140, 260, juce::roundToInt(static_cast<float>(centerArea.getWidth()) * 0.18f));
+        auto trackListArea = centerArea.removeFromLeft(trackListWidth);
+        trackListView.setBounds(trackListArea.reduced(2));
+        auto arrangeArea = centerArea.reduced(2);
+        timelineView.setBounds(arrangeArea);
+
+        const int totalRemaining = arrangeArea.getHeight();
         const int minTopHeight = 170;
         const int minBottomHeight = 220;
         const int splitterHeight = 8;
@@ -8482,9 +8591,9 @@ namespace sampledex
         const int bottomHeight = juce::jlimit(minBottomHeight, maxBottomHeight, desiredBottomHeight);
         const int topHeight = juce::jmax(minTopHeight, totalRemaining - bottomHeight - splitterHeight);
 
-        timeline.setBounds(r.removeFromTop(topHeight).reduced(2));
-        bottomSplitterBounds = r.removeFromTop(splitterHeight);
-        bottomTabs.setBounds(r);
+        timeline.setBounds(arrangeArea.removeFromTop(topHeight).reduced(2));
+        bottomSplitterBounds = arrangeArea.removeFromTop(splitterHeight);
+        bottomTabs.setBounds(arrangeArea);
     }
 
     void MainComponent::togglePlayback()
@@ -13185,6 +13294,12 @@ namespace sampledex
             freezeButton.setButtonText("Freeze");
             freezeButton.setTooltip("Freeze/unfreeze/commit selected track.");
         }
+
+        juce::StringArray names;
+        for (auto* track : tracks)
+            if (track != nullptr)
+                names.add(track->getTrackName());
+        trackListView.setTrackNames(names);
 
         refreshStatusText();
     }
