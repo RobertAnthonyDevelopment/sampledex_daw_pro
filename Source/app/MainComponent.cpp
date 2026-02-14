@@ -95,8 +95,8 @@ namespace
         return formatName.containsIgnoreCase("VST3");
     }
 
-    static constexpr int clipResamplerPhases = 32;
-    static constexpr int clipResamplerTaps = 16;
+    static constexpr int clipResamplerPhases = 128;
+    static constexpr int clipResamplerTaps = 32;
 
     using PolyphaseCoefficients = std::array<std::array<float, clipResamplerTaps>, clipResamplerPhases>;
 
@@ -106,7 +106,7 @@ namespace
         {
             PolyphaseCoefficients table {};
             constexpr int halfTaps = clipResamplerTaps / 2;
-            constexpr double cutoff = 0.92;
+            constexpr double cutoff = 0.965;
             constexpr double pi = juce::MathConstants<double>::pi;
 
             for (int phase = 0; phase < clipResamplerPhases; ++phase)
@@ -145,17 +145,56 @@ namespace
         constexpr int halfTaps = clipResamplerTaps / 2;
         const int baseIndex = static_cast<int>(std::floor(sourcePosition));
         const double frac = sourcePosition - static_cast<double>(baseIndex);
-        const int phase = juce::jlimit(0,
-                                       clipResamplerPhases - 1,
-                                       static_cast<int>(std::round(frac * static_cast<double>(clipResamplerPhases - 1))));
+        const double phasePosition = frac * static_cast<double>(clipResamplerPhases - 1);
+        const int phaseA = juce::jlimit(0,
+                                        clipResamplerPhases - 1,
+                                        static_cast<int>(std::floor(phasePosition)));
+        const int phaseB = juce::jlimit(0, clipResamplerPhases - 1, phaseA + 1);
+        const float phaseMix = static_cast<float>(phasePosition - static_cast<double>(phaseA));
         const int start = baseIndex - halfTaps + 1;
         float out = 0.0f;
         for (int tap = 0; tap < clipResamplerTaps; ++tap)
         {
             const int srcIndex = juce::jlimit(0, srcLength - 1, start + tap);
-            out += src[srcIndex] * coeffs[static_cast<size_t>(phase)][static_cast<size_t>(tap)];
+            const float coeffA = coeffs[static_cast<size_t>(phaseA)][static_cast<size_t>(tap)];
+            const float coeffB = coeffs[static_cast<size_t>(phaseB)][static_cast<size_t>(tap)];
+            const float coeff = coeffA + ((coeffB - coeffA) * phaseMix);
+            out += src[srcIndex] * coeff;
         }
         return out;
+    }
+
+    static inline float applyMicroFadeWindow(double beatInClip,
+                                             double clipLengthBeats,
+                                             double beatsPerSample,
+                                             float inSample) noexcept
+    {
+        constexpr int microFadeSamples = 48;
+        const double microFadeBeats = static_cast<double>(microFadeSamples) * beatsPerSample;
+        if (microFadeBeats <= 0.0)
+            return inSample;
+
+        float fade = 1.0f;
+        if (beatInClip < microFadeBeats)
+            fade = juce::jmin(fade, static_cast<float>(juce::jlimit(0.0, 1.0, beatInClip / microFadeBeats)));
+
+        const double beatsToEnd = juce::jmax(0.0, clipLengthBeats - beatInClip);
+        if (beatsToEnd < microFadeBeats)
+            fade = juce::jmin(fade, static_cast<float>(juce::jlimit(0.0, 1.0, beatsToEnd / microFadeBeats)));
+
+        return inSample * fade;
+    }
+
+    static inline float processSoftClipOversampled2x(float sample,
+                                                     float drive,
+                                                     float normaliser,
+                                                     float& prevInput) noexcept
+    {
+        const float midpoint = 0.5f * (prevInput + sample);
+        const float clippedMid = std::tanh(midpoint * drive) / normaliser;
+        const float clippedNow = std::tanh(sample * drive) / normaliser;
+        prevInput = sample;
+        return 0.5f * (clippedMid + clippedNow);
     }
 
     static inline std::uint32_t nextDitherState(std::uint32_t& state) noexcept
@@ -5836,8 +5875,12 @@ namespace sampledex
         transport.prepare(sampleRate);
         transport.setTempo(bpmRt.load());
         sampleRateRt.store(sampleRate > 0.0 ? sampleRate : 44100.0, std::memory_order_relaxed);
+        const double resolvedSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
+        const double tauSeconds = 0.005;
+        masterGainDezipperCoeff = static_cast<float>(1.0 - std::exp(-1.0 / (resolvedSampleRate * tauSeconds)));
         auxReturnGainRt.store(auxReturnGain, std::memory_order_relaxed);
         auxFxEnabledRt.store(auxFxEnabled, std::memory_order_relaxed);
+        outputDcHighPassEnabledRt.store(outputDcHighPassEnabled, std::memory_order_relaxed);
         midiCollector.reset(sampleRate);
         midiScheduler.reset();
         for (auto& auxReverb : auxReverbs)
@@ -5884,6 +5927,7 @@ namespace sampledex
         outputDcPrevInput = { 0.0f, 0.0f };
         outputDcPrevOutput = { 0.0f, 0.0f };
         masterLimiterPrevInput = { 0.0f, 0.0f };
+        masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
         masterLimiterGainState = 1.0f;
         wasTransportPlayingLastBlock = false;
         masterPhaseCorrelationRt.store(0.0f, std::memory_order_relaxed);
@@ -5915,6 +5959,8 @@ namespace sampledex
 
         if (bufferToFill.numSamples <= 0 || bufferToFill.buffer->getNumChannels() <= 0)
             return;
+
+        juce::ScopedNoDenormals noDenormals;
 
         AudioCallbackPerfScope callbackPerf(sampleRateRt,
                                             bufferToFill.numSamples,
@@ -5954,6 +6000,7 @@ namespace sampledex
             outputDcPrevInput = { 0.0f, 0.0f };
             outputDcPrevOutput = { 0.0f, 0.0f };
             masterLimiterPrevInput = { 0.0f, 0.0f };
+            masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
             masterLimiterGainState = 1.0f;
             masterPeakMeterRt.store(masterPeakMeterRt.load(std::memory_order_relaxed) * 0.86f, std::memory_order_relaxed);
             masterRmsMeterRt.store(masterRmsMeterRt.load(std::memory_order_relaxed) * 0.82f, std::memory_order_relaxed);
@@ -6540,6 +6587,7 @@ namespace sampledex
                             fadeGain = juce::jmin(fadeGain, static_cast<float>(juce::jlimit(0.0, 1.0, beatsToEnd / fadeOutBeats)));
                         }
                         const float sampleGain = baseGain * fadeGain;
+                        const double beatsPerSample = beatStep;
                         const int writeIndex = targetStartSample + sampleIdx;
                         if (clipNumChannels == 1)
                         {
@@ -6548,9 +6596,10 @@ namespace sampledex
                             const double localSourcePosition = hasDiskStream
                                 ? sourcePosition - static_cast<double>(readWindowStart)
                                 : sourcePosition;
-                            const float interpolated = sampleBandlimited(src,
-                                                                         hasDiskStream ? readWindowLength : clipNumSamples,
-                                                                         localSourcePosition);
+                            float interpolated = sampleBandlimited(src,
+                                                                    hasDiskStream ? readWindowLength : clipNumSamples,
+                                                                    localSourcePosition);
+                            interpolated = applyMicroFadeWindow(beatInClip, clip.lengthBeats, beatsPerSample, interpolated);
                             if (clipOutputChannels > 0)
                             {
                                 auto* dstL = clipTrackBuffer.getWritePointer(0);
@@ -6573,9 +6622,10 @@ namespace sampledex
                                 const double localSourcePosition = hasDiskStream
                                     ? sourcePosition - static_cast<double>(readWindowStart)
                                     : sourcePosition;
-                                const float interpolated = sampleBandlimited(src,
-                                                                             hasDiskStream ? readWindowLength : clipNumSamples,
-                                                                             localSourcePosition);
+                                float interpolated = sampleBandlimited(src,
+                                                                        hasDiskStream ? readWindowLength : clipNumSamples,
+                                                                        localSourcePosition);
+                                interpolated = applyMicroFadeWindow(beatInClip, clip.lengthBeats, beatsPerSample, interpolated);
                                 dst[writeIndex] += interpolated * sampleGain;
                             }
                         }
@@ -6961,92 +7011,105 @@ namespace sampledex
             startupSafetyBlocksRemainingRt.fetch_sub(1, std::memory_order_relaxed);
 
         const float targetMasterGain = masterOutputGainRt.load(std::memory_order_relaxed);
-        const float gainStep = (targetMasterGain - masterGainSmoothingState)
-                             / static_cast<float>(juce::jmax(1, bufferToFill.numSamples));
         const bool useSoftClip = masterSoftClipEnabledRt.load(std::memory_order_relaxed);
-        if (useSoftClip)
+        const bool limiterEnabled = masterLimiterEnabledRt.load(std::memory_order_relaxed);
+        constexpr float softClipDrive = 1.34f;
+        const float softClipNormaliser = std::tanh(softClipDrive);
+        constexpr float limiterCeiling = 0.972f;
+        constexpr float limiterAttack = 0.45f;
+        constexpr float limiterRelease = 0.0015f;
+        const float dezipperCoeff = masterGainDezipperCoeff > 0.0f
+            ? masterGainDezipperCoeff
+            : 0.0015f;
+
+        for (int i = 0; i < bufferToFill.numSamples; ++i)
         {
-            constexpr float drive = 1.18f;
-            const float normaliser = std::tanh(drive);
+            masterGainSmoothingState += (targetMasterGain - masterGainSmoothingState) * dezipperCoeff;
+
+            float overPeak = 0.0f;
             for (int ch = 0; ch < outputChannels; ++ch)
             {
                 auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                for (int i = 0; i < bufferToFill.numSamples; ++i)
-                {
-                    const float gain = masterGainSmoothingState + (gainStep * static_cast<float>(i));
-                    const float driven = write[i] * gain * drive;
-                    write[i] = std::tanh(driven) / normaliser;
-                }
-            }
-        }
-        else
-        {
-            for (int ch = 0; ch < outputChannels; ++ch)
-                bufferToFill.buffer->applyGainRamp(ch,
-                                                   bufferToFill.startSample,
-                                                   bufferToFill.numSamples,
-                                                   masterGainSmoothingState,
-                                                   targetMasterGain);
-        }
-        masterGainSmoothingState = targetMasterGain;
+                if (write == nullptr)
+                    continue;
 
-        if (masterLimiterEnabledRt.load(std::memory_order_relaxed))
-        {
-            constexpr float ceiling = 0.985f;
-            constexpr float attack = 0.30f;
-            constexpr float release = 0.0012f;
-            for (int i = 0; i < bufferToFill.numSamples; ++i)
+                float sample = write[i] * masterGainSmoothingState;
+                if (useSoftClip)
+                {
+                    auto& prevIn = masterTruePeakMidpointPrevInput[static_cast<size_t>(juce::jmin(ch, 1))];
+                    sample = processSoftClipOversampled2x(sample, softClipDrive, softClipNormaliser, prevIn);
+                }
+
+                write[i] = sample;
+                const float midpoint = 0.5f * (masterLimiterPrevInput[static_cast<size_t>(juce::jmin(ch, 1))] + sample);
+                overPeak = juce::jmax(overPeak, std::abs(sample));
+                overPeak = juce::jmax(overPeak, std::abs(midpoint));
+            }
+
+            if (limiterEnabled)
             {
-                float overPeak = 0.0f;
-                for (int ch = 0; ch < outputChannels; ++ch)
-                {
-                    auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                    const float x = write[i];
-                    const float xHalf = 0.5f * (masterLimiterPrevInput[static_cast<size_t>(juce::jmin(ch, 1))] + x);
-                    overPeak = juce::jmax(overPeak, std::abs(x));
-                    overPeak = juce::jmax(overPeak, std::abs(xHalf));
-                }
-
-                const float targetGain = overPeak > ceiling ? (ceiling / overPeak) : 1.0f;
+                const float targetGain = overPeak > limiterCeiling ? (limiterCeiling / overPeak) : 1.0f;
                 if (targetGain < masterLimiterGainState)
-                    masterLimiterGainState += (targetGain - masterLimiterGainState) * attack;
+                    masterLimiterGainState += (targetGain - masterLimiterGainState) * limiterAttack;
                 else
-                    masterLimiterGainState += (targetGain - masterLimiterGainState) * release;
+                    masterLimiterGainState += (targetGain - masterLimiterGainState) * limiterRelease;
+            }
+            else
+            {
+                masterLimiterGainState += (1.0f - masterLimiterGainState) * 0.01f;
+            }
 
-                for (int ch = 0; ch < outputChannels; ++ch)
-                {
-                    auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                    const float limited = write[i] * masterLimiterGainState;
-                    write[i] = juce::jlimit(-ceiling, ceiling, limited);
-                    masterLimiterPrevInput[static_cast<size_t>(juce::jmin(ch, 1))] = write[i];
-                }
+            for (int ch = 0; ch < outputChannels; ++ch)
+            {
+                auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                if (write == nullptr)
+                    continue;
+
+                float limited = write[i] * masterLimiterGainState;
+                limited = juce::jlimit(-limiterCeiling, limiterCeiling, limited);
+                if (std::abs(limited) < 1.0e-24f)
+                    limited = 0.0f;
+                write[i] = limited;
+                masterLimiterPrevInput[static_cast<size_t>(juce::jmin(ch, 1))] = limited;
             }
         }
-        else
+
+        if (!limiterEnabled)
         {
             masterLimiterPrevInput = { 0.0f, 0.0f };
             masterLimiterGainState = 1.0f;
         }
 
-        constexpr float dcBlockCoeff = 0.995f;
-        for (int ch = 0; ch < juce::jmin(outputChannels, 2); ++ch)
-        {
-            auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-            if (write == nullptr)
-                continue;
+        if (!useSoftClip)
+            masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
 
-            float prevIn = outputDcPrevInput[static_cast<size_t>(ch)];
-            float prevOut = outputDcPrevOutput[static_cast<size_t>(ch)];
-            for (int i = 0; i < bufferToFill.numSamples; ++i)
+        if (outputDcHighPassEnabledRt.load(std::memory_order_relaxed))
+        {
+            constexpr float dcBlockCoeff = 0.995f;
+            for (int ch = 0; ch < juce::jmin(outputChannels, 2); ++ch)
             {
-                const float in = write[i];
-                const float out = in - prevIn + (dcBlockCoeff * prevOut);
-                write[i] = out;
-                prevIn = in;
-                prevOut = out;
+                auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                if (write == nullptr)
+                    continue;
+
+                float prevIn = outputDcPrevInput[static_cast<size_t>(ch)];
+                float prevOut = outputDcPrevOutput[static_cast<size_t>(ch)];
+                for (int i = 0; i < bufferToFill.numSamples; ++i)
+                {
+                    const float in = write[i];
+                    const float out = in - prevIn + (dcBlockCoeff * prevOut);
+                    write[i] = out;
+                    prevIn = in;
+                    prevOut = out;
+                }
+                outputDcPrevInput[static_cast<size_t>(ch)] = prevIn;
+                outputDcPrevOutput[static_cast<size_t>(ch)] = prevOut;
             }
-            outputDcPrevInput[static_cast<size_t>(ch)] = prevIn;
-            outputDcPrevOutput[static_cast<size_t>(ch)] = prevOut;
+        }
+        else
+        {
+            outputDcPrevInput = { 0.0f, 0.0f };
+            outputDcPrevOutput = { 0.0f, 0.0f };
         }
 
         if (builtInFailSafe && monitoredTrackInputActive && !isPlaying && !recordingCaptureActive)
@@ -7302,6 +7365,7 @@ namespace sampledex
         outputDcPrevInput = { 0.0f, 0.0f };
         outputDcPrevOutput = { 0.0f, 0.0f };
         masterLimiterPrevInput = { 0.0f, 0.0f };
+        masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
         masterLimiterGainState = 1.0f;
         lastAudioDeviceNameSeen = device->getName();
         refreshInputDeviceSafetyState();
@@ -7325,6 +7389,7 @@ namespace sampledex
         outputDcPrevInput = { 0.0f, 0.0f };
         outputDcPrevOutput = { 0.0f, 0.0f };
         masterLimiterPrevInput = { 0.0f, 0.0f };
+        masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
         masterLimiterGainState = 1.0f;
         for (auto& tapInfo : inputTapNumChannels)
             tapInfo.store(0, std::memory_order_relaxed);
@@ -13143,6 +13208,7 @@ namespace sampledex
         masterLimiterEnabledRt.store(masterLimiterEnabled, std::memory_order_relaxed);
         auxFxEnabledRt.store(auxEnableButton.getToggleState(), std::memory_order_relaxed);
         auxReturnGainRt.store(static_cast<float>(auxReturnSlider.getValue()), std::memory_order_relaxed);
+        outputDcHighPassEnabledRt.store(outputDcHighPassEnabled, std::memory_order_relaxed);
         globalTransposeRt.store(projectTransposeSemitones, std::memory_order_relaxed);
         monitorSafeModeRt.store(monitorSafeMode, std::memory_order_relaxed);
         lowLatencyMode = lowLatencyToggle.getToggleState();
