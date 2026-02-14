@@ -602,7 +602,7 @@ namespace sampledex
             }
 
             const int instrumentInputs = juce::jmax(0, juce::jmin(2, instance->getMainBusNumInputChannels()));
-            const int instrumentOutputs = juce::jmax(1, juce::jmin(2, instance->getMainBusNumOutputChannels()));
+            const int instrumentOutputs = getUsableMainOutputChannels(*instance);
             if (instrumentOutputs <= 0)
             {
                 errorMsg = "Instrument plugin does not expose a usable output bus.";
@@ -679,8 +679,7 @@ namespace sampledex
             }
 
             const int effectInputs = juce::jmax(1, juce::jmin(2, instance->getMainBusNumInputChannels()));
-            const int effectOutputs = juce::jmax(effectInputs,
-                                                 juce::jmax(1, juce::jmin(2, instance->getMainBusNumOutputChannels())));
+            const int effectOutputs = juce::jmax(effectInputs, getUsableMainOutputChannels(*instance));
             if (effectOutputs <= 0)
             {
                 errorMsg = "Effect plugin does not expose a usable output bus.";
@@ -1200,23 +1199,35 @@ namespace sampledex
             if (instrumentSlot.instance)
             {
                 const int instrumentInputs = juce::jmax(0, juce::jmin(2, instrumentSlot.instance->getMainBusNumInputChannels()));
-                const int instrumentOutputs = juce::jmax(1, juce::jmin(2, instrumentSlot.instance->getMainBusNumOutputChannels()));
-                instrumentSlot.instance->setPlayConfigDetails(instrumentInputs,
-                                                              instrumentOutputs,
-                                                              sampleRate,
-                                                              samplesPerBlock);
-                instrumentSlot.instance->setRateAndBufferSizeDetails(sampleRate, samplesPerBlock);
-                instrumentSlot.instance->setPlayHead(transportPlayHead);
-                instrumentSlot.instance->prepareToPlay(sampleRate, samplesPerBlock);
-                instrumentSlot.instance->setNonRealtime(false);
+                const int instrumentOutputs = getUsableMainOutputChannels(*instrumentSlot.instance);
+                if (instrumentOutputs > 0)
+                {
+                    instrumentSlot.instance->setPlayConfigDetails(instrumentInputs,
+                                                                  instrumentOutputs,
+                                                                  sampleRate,
+                                                                  samplesPerBlock);
+                    instrumentSlot.instance->setRateAndBufferSizeDetails(sampleRate, samplesPerBlock);
+                    instrumentSlot.instance->setPlayHead(transportPlayHead);
+                    instrumentSlot.instance->prepareToPlay(sampleRate, samplesPerBlock);
+                    instrumentSlot.instance->setNonRealtime(false);
+                    instrumentSlot.bypassed = false;
+                }
+                else
+                {
+                    instrumentSlot.bypassed = true;
+                }
             }
             for (auto& slot : pluginSlots)
             {
                 if (!slot.instance)
                     continue;
                 const int effectInputs = juce::jmax(1, juce::jmin(2, slot.instance->getMainBusNumInputChannels()));
-                const int effectOutputs = juce::jmax(effectInputs,
-                                                     juce::jmax(1, juce::jmin(2, slot.instance->getMainBusNumOutputChannels())));
+                const int effectOutputs = juce::jmax(effectInputs, getUsableMainOutputChannels(*slot.instance));
+                if (effectOutputs <= 0)
+                {
+                    slot.bypassed = true;
+                    continue;
+                }
                 slot.instance->setPlayConfigDetails(effectInputs,
                                                     effectOutputs,
                                                     sampleRate,
@@ -1225,6 +1236,7 @@ namespace sampledex
                 slot.instance->setPlayHead(transportPlayHead);
                 slot.instance->prepareToPlay(sampleRate, samplesPerBlock);
                 slot.instance->setNonRealtime(false);
+                slot.bypassed = false;
             }
 
             const int requiredChannels = getRequiredPluginChannelsLocked(2);
@@ -1532,7 +1544,10 @@ namespace sampledex
             {
                 if (instrumentSlot.instance != nullptr && !instrumentSlot.bypassed)
                 {
-                    instrumentSlot.instance->processBlock(pluginProcessBuffer, midi);
+                    if (getUsableMainOutputChannels(*instrumentSlot.instance) > 0)
+                        instrumentSlot.instance->processBlock(pluginProcessBuffer, midi);
+                    else
+                        instrumentSlot.bypassed = true;
                 }
                 else if (builtInInstrumentMode == BuiltInInstrument::Sampler && samplerSynth.getNumSounds() > 0)
                 {
@@ -1555,6 +1570,11 @@ namespace sampledex
                 {
                     if (slot.instance == nullptr || slot.bypassed)
                         continue;
+                    if (getUsableMainOutputChannels(*slot.instance) <= 0)
+                    {
+                        slot.bypassed = true;
+                        continue;
+                    }
                     slot.instance->processBlock(pluginProcessBuffer, midi);
                 }
 
@@ -2213,6 +2233,11 @@ namespace sampledex
                 return false;
 
             return instance.getMainBusNumOutputChannels() > 0;
+        }
+
+        int getUsableMainOutputChannels(const juce::AudioPluginInstance& instance) const
+        {
+            return juce::jmax(0, juce::jmin(2, instance.getMainBusNumOutputChannels()));
         }
 
         void updateEqFiltersIfNeededLocked()
