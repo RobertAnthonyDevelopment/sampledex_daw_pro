@@ -12222,7 +12222,7 @@ namespace sampledex
                          | juce::FileBrowserComponent::canSelectFiles
                          | juce::FileBrowserComponent::warnAboutOverwriting;
         projectFileChooser->launchAsync(flags,
-                                        [this](const juce::FileChooser& chooser)
+                                        [this, cancelClose, quitNow](const juce::FileChooser& chooser)
                                         {
                                             const juce::File selectedFile = chooser.getResult();
                                             projectFileChooser.reset();
@@ -12388,7 +12388,7 @@ namespace sampledex
                          | juce::FileBrowserComponent::canSelectFiles
                          | juce::FileBrowserComponent::warnAboutOverwriting;
         projectFileChooser->launchAsync(flags,
-                                        [this](const juce::FileChooser& chooser)
+                                        [this, cancelClose, quitNow](const juce::FileChooser& chooser)
                                         {
                                             const juce::File selectedFile = chooser.getResult();
                                             projectFileChooser.reset();
