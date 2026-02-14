@@ -348,10 +348,12 @@ namespace sampledex
                            Track::RenderTaskType taskType = Track::RenderTaskType::None);
         void cancelActiveRenderTask();
         void startCaptureRecordingNow();
+        void startCaptureRecordingNow(double requestedStartBeat, int64_t requestedStartSample);
         void stopCaptureRecordingAndCommit(bool stopTransportAfterCommit);
         void startAudioTakeWriters(double startBeat);
         void stopAudioTakeWriters(double endBeat, std::vector<Clip>& destinationClips);
         void flushAudioTakeRingBuffers(bool flushAllPending);
+        void applyAutomaticAudioCrossfades(std::vector<Clip>& state) const;
         int chooseBestInputPairForCurrentBlock(int capturedInputChannels, int blockSamples) const;
         void setMonitorSafeMode(bool enabled);
         void calibrateInputMonitoring();
@@ -502,6 +504,7 @@ namespace sampledex
         double bpm = 120.0;
         double gridStepBeats = 0.25;
         double recordingStartBeat = 0.0;
+        int64_t recordingStartSample = 0;
         int recordingTakeCounter = 1;
         int recordCountInBars = 1;
         bool recordStartPending = false;
@@ -516,8 +519,22 @@ namespace sampledex
         int postRollBars = 1;
         double autoStopAfterBeat = -1.0;
         bool recordOverdubEnabled = true;
+        enum class InputMonitoringMode : int
+        {
+            ArmOnly = 0,
+            MonitorOnly = 1,
+            AutoMonitor = 2
+        };
+        InputMonitoringMode inputMonitoringMode = InputMonitoringMode::AutoMonitor;
         double recordingLatencyCompensationBeats = 0.0;
+        int recordingManualOffsetSamples = 0;
+        int recordingSafetyPreRollBlocks = 2;
+        int recordingSafetyPreRollSamples = 0;
         std::atomic<int> recordingLatencyCompensationSamplesRt { 0 };
+        std::atomic<double> recordingStartBeatRt { 0.0 };
+        std::atomic<int64_t> recordingStartSampleRt { 0 };
+        std::atomic<int> recordingStartOffsetSamplesRt { 0 };
+        std::atomic<int> recordingSafetyPreRollSamplesRt { 0 };
 
         std::array<juce::Reverb, static_cast<size_t>(auxBusCount)> auxReverbs;
         juce::Reverb::Parameters reverbParams;

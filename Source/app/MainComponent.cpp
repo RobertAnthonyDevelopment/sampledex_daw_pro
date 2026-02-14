@@ -2187,6 +2187,8 @@ namespace
         std::function<void()> onResetHolds;
         std::function<void(bool)> onMonitorSafeChanged;
         std::function<void(int)> onCountInBarsChanged;
+        std::function<void(int)> onManualOffsetSamplesChanged;
+        std::function<void(int)> onInputMonitoringModeChanged;
         std::function<void(bool)> onPunchEnabledChanged;
         std::function<void(double)> onPunchInChanged;
         std::function<void(double)> onPunchOutChanged;
@@ -2194,6 +2196,8 @@ namespace
         std::function<void(int)> onPostRollBarsChanged;
         std::function<juce::String()> getLatencyText;
         std::function<int()> getCountInBars;
+        std::function<int()> getManualOffsetSamples;
+        std::function<int()> getInputMonitoringMode;
         std::function<bool()> getPunchEnabled;
         std::function<double()> getPunchInBeat;
         std::function<double()> getPunchOutBeat;
@@ -2265,6 +2269,21 @@ namespace
                 onCountInBarsChanged(juce::jlimit(0, 2, bars));
             };
             addAndMakeVisible(countInBox);
+
+            monitorModeLabel.setText("Monitor", juce::dontSendNotification);
+            monitorModeLabel.setJustificationType(juce::Justification::centredLeft);
+            monitorModeLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.78f));
+            addAndMakeVisible(monitorModeLabel);
+
+            monitorModeBox.addItem("Arm-only", 1);
+            monitorModeBox.addItem("Monitor-only", 2);
+            monitorModeBox.addItem("Auto-monitor", 3);
+            monitorModeBox.onChange = [this]
+            {
+                if (onInputMonitoringModeChanged)
+                    onInputMonitoringModeChanged(juce::jmax(0, monitorModeBox.getSelectedId() - 1));
+            };
+            addAndMakeVisible(monitorModeBox);
 
             overdubToggle.setButtonText("Overdub");
             overdubToggle.setTooltip("When disabled, new takes replace overlapping clips on armed tracks.");
@@ -2350,6 +2369,21 @@ namespace
             };
             addAndMakeVisible(postRollBox);
 
+            offsetLabel.setText("Offset", juce::dontSendNotification);
+            offsetLabel.setJustificationType(juce::Justification::centredLeft);
+            offsetLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.78f));
+            addAndMakeVisible(offsetLabel);
+            offsetSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+            offsetSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 18);
+            offsetSlider.setRange(-4000.0, 4000.0, 1.0);
+            offsetSlider.setTextValueSuffix(" smp");
+            offsetSlider.onValueChange = [this]
+            {
+                if (onManualOffsetSamplesChanged)
+                    onManualOffsetSamplesChanged(juce::roundToInt(offsetSlider.getValue()));
+            };
+            addAndMakeVisible(offsetSlider);
+
             latencyLabel.setJustificationType(juce::Justification::centredLeft);
             latencyLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.82f));
             latencyLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
@@ -2432,6 +2466,8 @@ namespace
             auto countInRow = r.removeFromTop(22);
             countInLabel.setBounds(countInRow.removeFromLeft(62));
             countInBox.setBounds(countInRow.removeFromLeft(100).reduced(2, 0));
+            monitorModeLabel.setBounds(countInRow.removeFromLeft(58));
+            monitorModeBox.setBounds(countInRow.removeFromLeft(124).reduced(2, 0));
             overdubToggle.setBounds(countInRow.removeFromLeft(92));
             punchToggle.setBounds(countInRow.removeFromLeft(70));
             preRollLabel.setBounds(countInRow.removeFromLeft(34));
@@ -2448,7 +2484,10 @@ namespace
             punchOutSlider.setBounds(punchOutRow.reduced(2, 0));
 
             r.removeFromTop(2);
-            latencyLabel.setBounds(r.removeFromTop(26));
+            auto offsetRow = r.removeFromTop(24);
+            offsetLabel.setBounds(offsetRow.removeFromLeft(56));
+            offsetSlider.setBounds(offsetRow.reduced(2, 0));
+            latencyLabel.setBounds(r.removeFromTop(24));
         }
 
     private:
@@ -2563,6 +2602,8 @@ namespace
                     countInBox.setSelectedId(selectedId, juce::dontSendNotification);
             }
 
+            if (getInputMonitoringMode)
+                monitorModeBox.setSelectedId(juce::jmax(1, juce::jmin(3, getInputMonitoringMode() + 1)), juce::dontSendNotification);
             if (getOverdubEnabled)
                 overdubToggle.setToggleState(getOverdubEnabled(), juce::dontSendNotification);
             if (getPunchEnabled)
@@ -2583,6 +2624,8 @@ namespace
                 preRollBox.setSelectedId(rollIdForBars(getPreRollBars()), juce::dontSendNotification);
             if (getPostRollBars)
                 postRollBox.setSelectedId(rollIdForBars(getPostRollBars()), juce::dontSendNotification);
+            if (getManualOffsetSamples)
+                offsetSlider.setValue(static_cast<double>(getManualOffsetSamples()), juce::dontSendNotification);
             repaint(rowsBounds);
         }
 
@@ -2592,6 +2635,8 @@ namespace
         juce::ToggleButton monitorSafeToggle;
         juce::Label countInLabel;
         juce::ComboBox countInBox;
+        juce::Label monitorModeLabel;
+        juce::ComboBox monitorModeBox;
         juce::ToggleButton overdubToggle;
         juce::ToggleButton punchToggle;
         juce::Label punchInLabel;
@@ -2602,6 +2647,8 @@ namespace
         juce::ComboBox preRollBox;
         juce::Label postRollLabel;
         juce::ComboBox postRollBox;
+        juce::Label offsetLabel;
+        juce::Slider offsetSlider;
         juce::Label latencyLabel;
         juce::Rectangle<int> rowsBounds;
     };
@@ -3929,7 +3976,11 @@ namespace sampledex
                                      clip.startBeat = trimmedStart;
                                      clip.lengthBeats = trimmedLength;
 
-                                     if (clip.type == ClipType::MIDI)
+                                     if (clip.type == ClipType::Audio)
+                                     {
+                                         clip.offsetBeats = juce::jmax(0.0, clip.offsetBeats + delta);
+                                     }
+                                     else if (clip.type == ClipType::MIDI)
                                      {
                                          std::vector<TimelineEvent> keptEvents;
                                          keptEvents.reserve(clip.events.size());
@@ -4098,6 +4149,16 @@ namespace sampledex
             recordCountInBars = juce::jlimit(0, 2, bars);
             refreshStatusText();
         };
+        recordingContent->onManualOffsetSamplesChanged = [this](int samples)
+        {
+            recordingManualOffsetSamples = juce::jlimit(-20000, 20000, samples);
+            refreshStatusText();
+        };
+        recordingContent->onInputMonitoringModeChanged = [this](int mode)
+        {
+            inputMonitoringMode = static_cast<InputMonitoringMode>(juce::jlimit(0, 2, mode));
+            refreshStatusText();
+        };
         recordingContent->onOverdubChanged = [this](bool enabled)
         {
             recordOverdubEnabled = enabled;
@@ -4137,6 +4198,14 @@ namespace sampledex
         recordingContent->getCountInBars = [this]
         {
             return recordCountInBars;
+        };
+        recordingContent->getManualOffsetSamples = [this]
+        {
+            return recordingManualOffsetSamples;
+        };
+        recordingContent->getInputMonitoringMode = [this]
+        {
+            return static_cast<int>(inputMonitoringMode);
         };
         recordingContent->getOverdubEnabled = [this]
         {
@@ -6216,6 +6285,15 @@ namespace sampledex
             const double pendingBeat = recordStartPendingBeatRt.load(std::memory_order_relaxed);
             if (blockCoversBeat(pendingBeat))
             {
+                const double beatsPerSample = juce::jmax(1.0e-12, transport.getBeatsPerSample());
+                const double beatDelta = juce::jmax(0.0, pendingBeat - startBeat);
+                const int offsetSamples = juce::jlimit(0,
+                                                       juce::jmax(0, bufferToFill.numSamples - 1),
+                                                       static_cast<int>(std::llround(beatDelta / beatsPerSample)));
+                const int64_t startSample = blockRange.startSample + static_cast<int64_t>(offsetSamples);
+                recordingStartBeatRt.store(pendingBeat, std::memory_order_relaxed);
+                recordingStartSampleRt.store(startSample, std::memory_order_relaxed);
+                recordingStartOffsetSamplesRt.store(offsetSamples, std::memory_order_relaxed);
                 recordStartPendingRt.store(false, std::memory_order_relaxed);
                 recordStartRequestRt.store(1, std::memory_order_relaxed);
             }
@@ -6725,33 +6803,52 @@ namespace sampledex
                                              || track->isArmed();
 
             const juce::AudioBuffer<float>* monitorInput = nullptr;
+            const juce::AudioBuffer<float>* recordInput = nullptr;
             auto& trackInputBuffer = trackInputWorkBuffers[static_cast<size_t>(i)];
-            if (track->isInputMonitoringEnabled()
-                && capturedInputChannels > 0
+            if (capturedInputChannels > 0
                 && trackInputBuffer.getNumChannels() >= 2
                 && trackInputBuffer.getNumSamples() >= bufferToFill.numSamples
                 && liveInputCaptureBuffer.getNumSamples() >= bufferToFill.numSamples)
             {
-                if (!((builtInFailSafe && !allowBuiltInMonitor) || startupGuardActive))
-                {
-                    int pairIndex = track->getInputSourcePair();
-                    if (pairIndex < 0)
-                        pairIndex = bestAutoInputPair;
-                    const int sourceLeft = juce::jlimit(0, capturedInputChannels - 1, pairIndex * 2);
-                    int sourceRight = sourceLeft + 1;
-                    if (sourceRight >= capturedInputChannels)
-                        sourceRight = sourceLeft;
+                int pairIndex = track->getInputSourcePair();
+                if (pairIndex < 0)
+                    pairIndex = bestAutoInputPair;
+                const int sourceLeft = juce::jlimit(0, capturedInputChannels - 1, pairIndex * 2);
+                int sourceRight = sourceLeft + 1;
+                if (sourceRight >= capturedInputChannels)
+                    sourceRight = sourceLeft;
 
-                    trackInputBuffer.clear(0, 0, bufferToFill.numSamples);
-                    trackInputBuffer.clear(1, 0, bufferToFill.numSamples);
-                    const float monitorTrim = inputMonitorSafetyTrimRt.load(std::memory_order_relaxed);
-                    trackInputBuffer.copyFrom(0, 0, liveInputCaptureBuffer, sourceLeft, 0, bufferToFill.numSamples);
-                    trackInputBuffer.copyFrom(1, 0, liveInputCaptureBuffer, sourceRight, 0, bufferToFill.numSamples);
-                    if (std::abs(monitorTrim - 1.0f) > 0.0001f)
-                    {
-                        trackInputBuffer.applyGain(0, 0, bufferToFill.numSamples, monitorTrim);
-                        trackInputBuffer.applyGain(1, 0, bufferToFill.numSamples, monitorTrim);
-                    }
+                trackInputBuffer.clear(0, 0, bufferToFill.numSamples);
+                trackInputBuffer.clear(1, 0, bufferToFill.numSamples);
+                const float monitorTrim = inputMonitorSafetyTrimRt.load(std::memory_order_relaxed);
+                trackInputBuffer.copyFrom(0, 0, liveInputCaptureBuffer, sourceLeft, 0, bufferToFill.numSamples);
+                trackInputBuffer.copyFrom(1, 0, liveInputCaptureBuffer, sourceRight, 0, bufferToFill.numSamples);
+                if (std::abs(monitorTrim - 1.0f) > 0.0001f)
+                {
+                    trackInputBuffer.applyGain(0, 0, bufferToFill.numSamples, monitorTrim);
+                    trackInputBuffer.applyGain(1, 0, bufferToFill.numSamples, monitorTrim);
+                }
+
+                recordInput = &trackInputBuffer;
+
+                bool allowMonitorForMode = false;
+                switch (inputMonitoringMode)
+                {
+                    case InputMonitoringMode::ArmOnly:
+                        allowMonitorForMode = false;
+                        break;
+                    case InputMonitoringMode::MonitorOnly:
+                        allowMonitorForMode = track->isInputMonitoringEnabled();
+                        break;
+                    case InputMonitoringMode::AutoMonitor:
+                    default:
+                        allowMonitorForMode = track->isArmed() && recordingCaptureActive;
+                        break;
+                }
+
+                if (allowMonitorForMode
+                    && !((builtInFailSafe && !allowBuiltInMonitor) || startupGuardActive))
+                {
                     monitorInput = &trackInputBuffer;
                 }
             }
@@ -6765,18 +6862,19 @@ namespace sampledex
             job.processTrack = true;
 
             if (recordingCaptureActive
-                && monitorInput != nullptr
+                && track->isArmed()
+                && recordInput != nullptr
                 && juce::isPositiveAndBelow(i, maxRealtimeTracks))
             {
                 auto& take = audioTakeWriters[static_cast<size_t>(i)];
                 if (take.active && take.ringFifo != nullptr
-                    && monitorInput->getNumChannels() >= 2
-                    && monitorInput->getNumSamples() >= bufferToFill.numSamples)
+                    && recordInput->getNumChannels() >= 2
+                    && recordInput->getNumSamples() >= bufferToFill.numSamples)
                 {
                     int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
                     take.ringFifo->prepareToWrite(bufferToFill.numSamples, start1, size1, start2, size2);
-                    const float* left = monitorInput->getReadPointer(0);
-                    const float* right = monitorInput->getReadPointer(1);
+                    const float* left = recordInput->getReadPointer(0);
+                    const float* right = recordInput->getReadPointer(1);
                     if (left != nullptr && right != nullptr)
                     {
                         int copied = 0;
@@ -8471,6 +8569,7 @@ namespace sampledex
         int afterSelection = beforeSelection;
 
         mutator(after, afterSelection);
+        applyAutomaticAudioCrossfades(after);
 
         if (before == after && beforeSelection == afterSelection)
             return;
@@ -8762,15 +8861,18 @@ namespace sampledex
             const double durationSeconds = static_cast<double>(take.samplesWritten) / juce::jmax(1.0, take.sampleRate);
             const double durationBeatsFromSamples = juce::jmax(0.0, durationSeconds * (bpmRt.load(std::memory_order_relaxed) / 60.0));
             const double durationBeatsFromTimeline = juce::jmax(0.0, take.endBeat - take.startBeat);
+            const double preRollSafetyBeats = (static_cast<double>(recordingSafetyPreRollSamplesRt.load(std::memory_order_relaxed))
+                                               / juce::jmax(1.0, take.sampleRate))
+                                              * (bpmRt.load(std::memory_order_relaxed) / 60.0);
             const double clipDurationBeats = juce::jmax(0.25,
-                                                        durationBeatsFromTimeline > 0.0001
+                                                        (durationBeatsFromTimeline > 0.0001
                                                             ? durationBeatsFromTimeline
-                                                            : durationBeatsFromSamples);
+                                                            : durationBeatsFromSamples) - preRollSafetyBeats);
 
             Clip clip;
             clip.type = ClipType::Audio;
             clip.name = "Audio Take " + juce::String(recordingTakeCounter++);
-            clip.startBeat = juce::jmax(0.0, take.startBeat - recordingLatencyCompensationBeats);
+            clip.startBeat = juce::jmax(0.0, take.startBeat + preRollSafetyBeats - recordingLatencyCompensationBeats);
             clip.lengthBeats = clipDurationBeats;
             clip.trackIndex = take.trackIndex;
             clip.audioData.reset();
@@ -8787,28 +8889,43 @@ namespace sampledex
 
     void MainComponent::startCaptureRecordingNow()
     {
-        recordingStartBeat = transport.getCurrentBeat();
+        startCaptureRecordingNow(transport.getCurrentBeat(), transport.getCurrentSample());
+    }
+
+    void MainComponent::startCaptureRecordingNow(double requestedStartBeat, int64_t requestedStartSample)
+    {
+        recordingStartBeat = juce::jmax(0.0, requestedStartBeat);
+        recordingStartSample = juce::jmax<int64_t>(0, requestedStartSample);
         recordStartPending = false;
         recordStartPendingRt.store(false, std::memory_order_relaxed);
         recordStartPendingBeatRt.store(recordingStartBeat, std::memory_order_relaxed);
         recordStartRequestRt.store(0, std::memory_order_relaxed);
 
-        int latencySamples = 0;
+        int inputLatencySamples = 0;
+        int blockSizeSamples = 0;
         if (auto* device = deviceManager.getCurrentAudioDevice())
         {
-            latencySamples = juce::jmax(0, device->getInputLatencyInSamples())
-                           + juce::jmax(0, device->getOutputLatencyInSamples())
-                           + juce::jmax(0, device->getCurrentBufferSizeSamples());
+            inputLatencySamples = juce::jmax(0, device->getInputLatencyInSamples());
+            blockSizeSamples = juce::jmax(0, device->getCurrentBufferSizeSamples());
         }
+
+        const int manualOffsetSamples = recordingManualOffsetSamples;
+        const int latencySamples = juce::jmax(0, inputLatencySamples + manualOffsetSamples);
+        recordingSafetyPreRollSamples = juce::jmax(0, blockSizeSamples * juce::jmax(1, recordingSafetyPreRollBlocks));
+        recordingSafetyPreRollSamplesRt.store(recordingSafetyPreRollSamples, std::memory_order_relaxed);
         recordingLatencyCompensationSamplesRt.store(latencySamples, std::memory_order_relaxed);
+
         const double currentTempo = juce::jmax(1.0, transport.getTempo());
         const double sampleRate = juce::jmax(1.0, sampleRateRt.load(std::memory_order_relaxed));
         recordingLatencyCompensationBeats = (static_cast<double>(latencySamples) / sampleRate) * (currentTempo / 60.0);
 
+        const double preRollSafetyBeats = (static_cast<double>(recordingSafetyPreRollSamples) / sampleRate) * (currentTempo / 60.0);
+        const double writerStartBeat = juce::jmax(0.0, recordingStartBeat - preRollSafetyBeats);
+
         transport.setRecording(true);
         for (auto* track : tracks)
             track->startRecording();
-        startAudioTakeWriters(recordingStartBeat);
+        startAudioTakeWriters(writerStartBeat);
     }
 
     void MainComponent::stopCaptureRecordingAndCommit(bool stopTransportAfterCommit)
@@ -8924,6 +9041,45 @@ namespace sampledex
             transport.stop();
 
         refreshStatusText();
+    }
+
+    void MainComponent::applyAutomaticAudioCrossfades(std::vector<Clip>& state) const
+    {
+        std::vector<int> audioIndexes;
+        audioIndexes.reserve(state.size());
+        for (int i = 0; i < static_cast<int>(state.size()); ++i)
+        {
+            if (state[static_cast<size_t>(i)].type == ClipType::Audio)
+            {
+                state[static_cast<size_t>(i)].crossfadeInBeats = 0.0;
+                state[static_cast<size_t>(i)].crossfadeOutBeats = 0.0;
+                audioIndexes.push_back(i);
+            }
+        }
+
+        for (int i = 0; i < static_cast<int>(audioIndexes.size()); ++i)
+        {
+            for (int j = i + 1; j < static_cast<int>(audioIndexes.size()); ++j)
+            {
+                auto& a = state[static_cast<size_t>(audioIndexes[static_cast<size_t>(i)])];
+                auto& b = state[static_cast<size_t>(audioIndexes[static_cast<size_t>(j)])];
+                if (a.trackIndex != b.trackIndex)
+                    continue;
+
+                Clip* left = &a;
+                Clip* right = &b;
+                if (left->startBeat > right->startBeat)
+                    std::swap(left, right);
+
+                const double leftEnd = left->startBeat + juce::jmax(0.0, left->lengthBeats);
+                const double overlap = leftEnd - right->startBeat;
+                if (overlap <= 0.0)
+                    continue;
+
+                const double fade = juce::jlimit(0.0, 0.25, overlap * 0.5);
+                ArrangementEditing::applySymmetricCrossfade(*left, *right, fade);
+            }
+        }
     }
 
     void MainComponent::toggleRecord() {
@@ -10291,9 +10447,12 @@ namespace sampledex
         const int graphPdcSamples = juce::jmax(maxPluginLatencySamples,
                                                maxPdcLatencySamplesRt.load(std::memory_order_relaxed));
 
+        const int captureCompSamples = juce::jmax(0, inputLatencySamples + recordingManualOffsetSamples);
         return "Latency: In " + juce::String(inputLatencySamples) + " (" + juce::String(toMs(inputLatencySamples), 2) + "ms)"
              + "  Out " + juce::String(outputLatencySamples) + " (" + juce::String(toMs(outputLatencySamples), 2) + "ms)"
              + "  RTL " + juce::String(roundTripSamples) + " (" + juce::String(toMs(roundTripSamples), 2) + "ms)"
+             + "  |  RecComp " + juce::String(captureCompSamples) + " (" + juce::String(toMs(captureCompSamples), 2) + "ms)"
+             + "  Manual " + juce::String(recordingManualOffsetSamples) + " smp"
              + "  |  SR " + juce::String(sampleRate, 0) + "  Buf " + juce::String(bufferSamples)
              + "  |  PDC Sel " + juce::String(selectedTrackLatencySamples) + " (" + juce::String(toMs(selectedTrackLatencySamples), 2) + "ms)"
              + "  AuxMax " + juce::String(maxAuxInsertLatencySamples) + " (" + juce::String(toMs(maxAuxInsertLatencySamples), 2) + "ms)"
@@ -12850,7 +13009,9 @@ namespace sampledex
         {
             recordStartPending = false;
             recordStartPendingRt.store(false, std::memory_order_relaxed);
-            startCaptureRecordingNow();
+            const double startBeat = recordingStartBeatRt.load(std::memory_order_relaxed);
+            const int64_t startSample = recordingStartSampleRt.load(std::memory_order_relaxed);
+            startCaptureRecordingNow(startBeat, startSample);
             if (forcedMetronomeForCountIn)
             {
                 forcedMetronomeForCountIn = false;
@@ -12879,7 +13040,7 @@ namespace sampledex
             {
                 recordStartPending = false;
                 recordStartPendingRt.store(false, std::memory_order_relaxed);
-                startCaptureRecordingNow();
+                startCaptureRecordingNow(recordStartPendingBeat, transport.getCurrentSample());
 
                 if (forcedMetronomeForCountIn)
                 {
