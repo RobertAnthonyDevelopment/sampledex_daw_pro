@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.22)
-project(SampledexChordLab VERSION 2.0.0 LANGUAGES C CXX OBJCXX)
+
+set(SAMPLEDEX_LANGUAGES C CXX)
+if(APPLE)
+    list(APPEND SAMPLEDEX_LANGUAGES OBJCXX)
+endif()
+
+project(SampledexChordLab VERSION 2.0.0 LANGUAGES ${SAMPLEDEX_LANGUAGES})
 
 # --- 1. Build Settings ---
 set(CMAKE_CXX_STANDARD 20)
@@ -13,6 +19,9 @@ if(APPLE)
 endif()
 
 # --- 2. JUCE Setup ---
+option(SAMPLEDEX_FETCH_JUCE "Fetch JUCE with FetchContent when JUCE_DIR is unavailable" OFF)
+set(SAMPLEDEX_HAS_JUCE OFF)
+
 # Default to environment variable if set
 if(NOT JUCE_DIR AND DEFINED ENV{JUCE_DIR})
     set(JUCE_DIR "$ENV{JUCE_DIR}" CACHE PATH "Path to JUCE repository" FORCE)
@@ -27,13 +36,29 @@ if(NOT JUCE_DIR)
     endif()
 endif()
 
-if(NOT JUCE_DIR OR NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "JUCE not found. Please set the JUCE_DIR environment variable or CMake cache variable to your JUCE installation path.")
+if(JUCE_DIR AND EXISTS "${JUCE_DIR}/CMakeLists.txt")
+    add_subdirectory("${JUCE_DIR}" JUCE)
+    set(SAMPLEDEX_HAS_JUCE ON)
+elseif(SAMPLEDEX_FETCH_JUCE)
+    include(FetchContent)
+    message(STATUS "JUCE_DIR not set or invalid; fetching JUCE via FetchContent")
+    FetchContent_Declare(
+        JUCE
+        GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+        GIT_TAG 8.0.3
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(JUCE)
+    set(SAMPLEDEX_HAS_JUCE ON)
+else()
+    message(WARNING
+        "JUCE was not found locally and SAMPLEDEX_FETCH_JUCE is OFF. "
+        "Configure will continue without generating the SampledexChordLab app target. "
+        "Set JUCE_DIR to a local JUCE checkout, or configure with -DSAMPLEDEX_FETCH_JUCE=ON to fetch JUCE.")
 endif()
 
-add_subdirectory("${JUCE_DIR}" JUCE)
-
 # --- 3. App Definition ---
+if(SAMPLEDEX_HAS_JUCE)
 juce_add_gui_app(SampledexChordLab
     COMPANY_NAME "Sampledex"
     PRODUCT_NAME "Sampledex ChordLab"
@@ -134,4 +159,6 @@ if(APPLE)
 /usr/libexec/PlistBuddy -c \"Add :NSMicrophoneUsageDescription string 'Sampledex ChordLab uses audio inputs for microphone and line recording.'\" \"$PLIST\""
         VERBATIM
     )
+endif()
+
 endif()

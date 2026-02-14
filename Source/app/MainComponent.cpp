@@ -970,7 +970,7 @@ namespace
             setResizable(true, true);
             setContentOwned(editorToOwn, true);
             setResizeLimits(320, 220, 3840, 2160);
-            setAlwaysOnTop(true);
+            setAlwaysOnTop(false);
 
             int width = 720;
             int height = 500;
@@ -12081,6 +12081,7 @@ namespace sampledex
 
     void MainComponent::requestApplicationClose()
     {
+        closePluginEditorWindow();
         outputSafetyMuteBlocksRt.store(256, std::memory_order_relaxed);
         transport.stop();
         panicAllNotes();
@@ -15130,6 +15131,11 @@ namespace sampledex
 
     void MainComponent::closePluginEditorWindow()
     {
+        if (pluginEditorWindow != nullptr)
+        {
+            pluginEditorWindow->setVisible(false);
+            pluginEditorWindow->clearContentComponent();
+        }
         pluginEditorWindow.reset();
         pluginEditorTrackIndex = -1;
         pluginEditorSlotIndex = Track::instrumentSlotIndex;
