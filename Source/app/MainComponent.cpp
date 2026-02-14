@@ -2209,6 +2209,8 @@ namespace
         std::function<float()> getLiveInputPeak;
         std::function<float()> getLiveInputRms;
         std::function<void(int)> onTrackRowClicked;
+        std::function<void(bool)> onOverdubChanged;
+        std::function<bool()> getOverdubEnabled;
 
         RecordingPanelContent()
         {
@@ -2263,6 +2265,15 @@ namespace
                 onCountInBarsChanged(juce::jlimit(0, 2, bars));
             };
             addAndMakeVisible(countInBox);
+
+            overdubToggle.setButtonText("Overdub");
+            overdubToggle.setTooltip("When disabled, new takes replace overlapping clips on armed tracks.");
+            overdubToggle.onClick = [this]
+            {
+                if (onOverdubChanged)
+                    onOverdubChanged(overdubToggle.getToggleState());
+            };
+            addAndMakeVisible(overdubToggle);
 
             punchToggle.setButtonText("Punch");
             punchToggle.setTooltip("Enable punch-in / punch-out recording.");
@@ -2421,7 +2432,8 @@ namespace
             auto countInRow = r.removeFromTop(22);
             countInLabel.setBounds(countInRow.removeFromLeft(62));
             countInBox.setBounds(countInRow.removeFromLeft(100).reduced(2, 0));
-            punchToggle.setBounds(countInRow.removeFromLeft(78));
+            overdubToggle.setBounds(countInRow.removeFromLeft(92));
+            punchToggle.setBounds(countInRow.removeFromLeft(70));
             preRollLabel.setBounds(countInRow.removeFromLeft(34));
             preRollBox.setBounds(countInRow.removeFromLeft(82).reduced(2, 0));
             postRollLabel.setBounds(countInRow.removeFromLeft(40));
@@ -2551,6 +2563,8 @@ namespace
                     countInBox.setSelectedId(selectedId, juce::dontSendNotification);
             }
 
+            if (getOverdubEnabled)
+                overdubToggle.setToggleState(getOverdubEnabled(), juce::dontSendNotification);
             if (getPunchEnabled)
                 punchToggle.setToggleState(getPunchEnabled(), juce::dontSendNotification);
             if (getPunchInBeat)
@@ -2578,6 +2592,7 @@ namespace
         juce::ToggleButton monitorSafeToggle;
         juce::Label countInLabel;
         juce::ComboBox countInBox;
+        juce::ToggleButton overdubToggle;
         juce::ToggleButton punchToggle;
         juce::Label punchInLabel;
         juce::Slider punchInSlider;
@@ -2889,6 +2904,8 @@ namespace sampledex
         loadMidiLearnMappings();
         if (!streamingAudioReadThread.isThreadRunning())
             streamingAudioReadThread.startThread();
+        if (!audioRecordDiskThread.isThreadRunning())
+            audioRecordDiskThread.startThread();
 
         // 3. MIDI Devices
         refreshMidiInputSelector();
@@ -4081,6 +4098,11 @@ namespace sampledex
             recordCountInBars = juce::jlimit(0, 2, bars);
             refreshStatusText();
         };
+        recordingContent->onOverdubChanged = [this](bool enabled)
+        {
+            recordOverdubEnabled = enabled;
+            refreshStatusText();
+        };
         recordingContent->onPunchEnabledChanged = [this](bool enabled)
         {
             punchEnabled = enabled;
@@ -4115,6 +4137,10 @@ namespace sampledex
         recordingContent->getCountInBars = [this]
         {
             return recordCountInBars;
+        };
+        recordingContent->getOverdubEnabled = [this]
+        {
+            return recordOverdubEnabled;
         };
         recordingContent->getPunchEnabled = [this]
         {
@@ -5258,7 +5284,7 @@ namespace sampledex
                 take.active = false;
             }
         }
-        audioRecordWriterThread.stopThread(1500);
+        audioRecordDiskThread.stopThread(1500);
         streamingAudioReadThread.stopThread(1500);
         {
             const juce::ScopedLock sl(retiredSnapshotLock);
@@ -6739,19 +6765,40 @@ namespace sampledex
                 && juce::isPositiveAndBelow(i, maxRealtimeTracks))
             {
                 auto& take = audioTakeWriters[static_cast<size_t>(i)];
-                if (take.active && take.writer != nullptr
+                if (take.active && take.ringFifo != nullptr
                     && monitorInput->getNumChannels() >= 2
                     && monitorInput->getNumSamples() >= bufferToFill.numSamples)
                 {
-                    const float* channels[2]
+                    int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
+                    take.ringFifo->prepareToWrite(bufferToFill.numSamples, start1, size1, start2, size2);
+                    const float* left = monitorInput->getReadPointer(0);
+                    const float* right = monitorInput->getReadPointer(1);
+                    if (left != nullptr && right != nullptr)
                     {
-                        monitorInput->getReadPointer(0),
-                        monitorInput->getReadPointer(1)
-                    };
-                    if (channels[0] != nullptr && channels[1] != nullptr
-                        && take.writer->write(channels, bufferToFill.numSamples))
-                    {
-                        take.samplesWritten += static_cast<int64>(bufferToFill.numSamples);
+                        int copied = 0;
+                        if (size1 > 0)
+                        {
+                            std::memcpy(take.ringLeft.data() + start1,
+                                        left,
+                                        static_cast<size_t>(size1) * sizeof(float));
+                            std::memcpy(take.ringRight.data() + start1,
+                                        right,
+                                        static_cast<size_t>(size1) * sizeof(float));
+                            copied += size1;
+                        }
+                        if (size2 > 0)
+                        {
+                            std::memcpy(take.ringLeft.data() + start2,
+                                        left + copied,
+                                        static_cast<size_t>(size2) * sizeof(float));
+                            std::memcpy(take.ringRight.data() + start2,
+                                        right + copied,
+                                        static_cast<size_t>(size2) * sizeof(float));
+                            copied += size2;
+                        }
+                        take.ringFifo->finishedWrite(copied);
+                        if (copied < bufferToFill.numSamples)
+                            take.droppedSamples.fetch_add(static_cast<int64>(bufferToFill.numSamples - copied), std::memory_order_relaxed);
                     }
                 }
             }
@@ -8517,8 +8564,6 @@ namespace sampledex
     void MainComponent::startAudioTakeWriters(double startBeat)
     {
         const double sampleRate = juce::jmax(1.0, sampleRateRt.load(std::memory_order_relaxed));
-        if (!audioRecordWriterThread.isThreadRunning())
-            audioRecordWriterThread.startThread();
 
         auto recordingsDir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
             .getChildFile("Sampledex")
@@ -8528,6 +8573,7 @@ namespace sampledex
         const auto timestampToken = juce::String(juce::Time::getCurrentTime().toMilliseconds());
 
         const juce::ScopedLock audioLock(deviceManager.getAudioCallbackLock());
+        const int ringCapacitySamples = juce::jmax(maxRealtimeBlockSize * 32, 65536);
         for (auto& take : audioTakeWriters)
         {
             take.writer.reset();
@@ -8538,6 +8584,12 @@ namespace sampledex
             take.startBeat = startBeat;
             take.sampleRate = sampleRate;
             take.trackIndex = -1;
+            take.ringLeft.clear();
+            take.ringRight.clear();
+            take.ringFifo.reset();
+            take.droppedSamples.store(0, std::memory_order_relaxed);
+            take.hadWriteError.store(false, std::memory_order_relaxed);
+            take.writeErrorMessage.clear();
         }
 
         for (int trackIndex = 0; trackIndex < tracks.size() && trackIndex < maxRealtimeTracks; ++trackIndex)
@@ -8559,32 +8611,84 @@ namespace sampledex
             auto fileOutput = take.file.createOutputStream();
             if (fileOutput == nullptr || !fileOutput->openedOk())
             {
+                take.writeErrorMessage = "Unable to open recording file for writing.";
                 take.file = juce::File();
                 continue;
             }
-
-            std::unique_ptr<juce::OutputStream> outputStream(fileOutput.release());
 
             juce::WavAudioFormat wavFormat;
             juce::AudioFormatWriterOptions writerOptions;
             writerOptions = writerOptions.withSampleRate(sampleRate)
                                          .withNumChannels(2)
                                          .withBitsPerSample(24);
-            std::unique_ptr<juce::AudioFormatWriter> writer(
-                wavFormat.createWriterFor(outputStream, writerOptions));
-            if (writer == nullptr)
+            auto* rawWriter = wavFormat.createWriterFor(fileOutput.release(), writerOptions);
+            if (rawWriter == nullptr)
             {
                 take.file.deleteFile();
+                take.writeErrorMessage = "Unable to create WAV writer for recording take.";
                 take.file = juce::File();
                 continue;
             }
 
-            take.writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
-                writer.release(),
-                audioRecordWriterThread,
-                32768);
+            take.writer.reset(rawWriter);
+            take.ringLeft.assign(static_cast<size_t>(ringCapacitySamples), 0.0f);
+            take.ringRight.assign(static_cast<size_t>(ringCapacitySamples), 0.0f);
+            take.ringFifo = std::make_unique<juce::AbstractFifo>(ringCapacitySamples);
             take.active = (take.writer != nullptr);
             take.samplesWritten = 0;
+        }
+    }
+
+    void MainComponent::flushAudioTakeRingBuffers(bool flushAllPending)
+    {
+        for (auto& take : audioTakeWriters)
+        {
+            if (take.writer == nullptr || take.ringFifo == nullptr)
+                continue;
+
+            while (take.ringFifo->getNumReady() > 0)
+            {
+                const int numReady = take.ringFifo->getNumReady();
+                if (numReady <= 0)
+                    break;
+
+                int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
+                take.ringFifo->prepareToRead(numReady, start1, size1, start2, size2);
+                if (size1 > 0)
+                {
+                    juce::AudioBuffer<float> writeBuffer(2, size1);
+                    std::memcpy(writeBuffer.getWritePointer(0), take.ringLeft.data() + start1, static_cast<size_t>(size1) * sizeof(float));
+                    std::memcpy(writeBuffer.getWritePointer(1), take.ringRight.data() + start1, static_cast<size_t>(size1) * sizeof(float));
+                    if (!take.writer->writeFromAudioSampleBuffer(writeBuffer, 0, size1))
+                    {
+                        take.hadWriteError.store(true, std::memory_order_relaxed);
+                        if (take.writeErrorMessage.isEmpty())
+                            take.writeErrorMessage = "Disk write failed (disk full or permission denied).";
+                        take.active = false;
+                        break;
+                    }
+                    take.samplesWritten += static_cast<int64>(size1);
+                }
+                if (size2 > 0)
+                {
+                    juce::AudioBuffer<float> writeBuffer(2, size2);
+                    std::memcpy(writeBuffer.getWritePointer(0), take.ringLeft.data() + start2, static_cast<size_t>(size2) * sizeof(float));
+                    std::memcpy(writeBuffer.getWritePointer(1), take.ringRight.data() + start2, static_cast<size_t>(size2) * sizeof(float));
+                    if (!take.writer->writeFromAudioSampleBuffer(writeBuffer, 0, size2))
+                    {
+                        take.hadWriteError.store(true, std::memory_order_relaxed);
+                        if (take.writeErrorMessage.isEmpty())
+                            take.writeErrorMessage = "Disk write failed (disk full or permission denied).";
+                        take.active = false;
+                        break;
+                    }
+                    take.samplesWritten += static_cast<int64>(size2);
+                }
+                take.ringFifo->finishedRead(size1 + size2);
+
+                if (!flushAllPending)
+                    break;
+            }
         }
     }
 
@@ -8598,11 +8702,13 @@ namespace sampledex
             double startBeat = 0.0;
             double endBeat = 0.0;
             double sampleRate = 44100.0;
+            bool hadError = false;
         };
 
         std::vector<ClosedTake> closedTakes;
         closedTakes.reserve(static_cast<size_t>(tracks.size()));
 
+        flushAudioTakeRingBuffers(true);
         {
             const juce::ScopedLock audioLock(deviceManager.getAudioCallbackLock());
             for (auto& take : audioTakeWriters)
@@ -8617,6 +8723,8 @@ namespace sampledex
                 closed.startBeat = take.startBeat;
                 closed.endBeat = endBeat;
                 closed.sampleRate = take.sampleRate;
+                closed.hadError = take.hadWriteError.load(std::memory_order_relaxed)
+                                  || take.droppedSamples.load(std::memory_order_relaxed) > 0;
                 closedTakes.push_back(std::move(closed));
 
                 take.writer.reset();
@@ -8627,6 +8735,12 @@ namespace sampledex
                 take.startBeat = 0.0;
                 take.sampleRate = 44100.0;
                 take.trackIndex = -1;
+                take.ringLeft.clear();
+                take.ringRight.clear();
+                take.ringFifo.reset();
+                take.droppedSamples.store(0, std::memory_order_relaxed);
+                take.hadWriteError.store(false, std::memory_order_relaxed);
+                take.writeErrorMessage.clear();
             }
         }
 
@@ -8634,7 +8748,8 @@ namespace sampledex
         {
             if (!take.file.existsAsFile()
                 || !juce::isPositiveAndBelow(take.trackIndex, tracks.size())
-                || take.samplesWritten < 64)
+                || take.samplesWritten < 64
+                || take.hadError)
             {
                 continue;
             }
@@ -8650,7 +8765,7 @@ namespace sampledex
             Clip clip;
             clip.type = ClipType::Audio;
             clip.name = "Audio Take " + juce::String(recordingTakeCounter++);
-            clip.startBeat = juce::jmax(0.0, take.startBeat);
+            clip.startBeat = juce::jmax(0.0, take.startBeat - recordingLatencyCompensationBeats);
             clip.lengthBeats = clipDurationBeats;
             clip.trackIndex = take.trackIndex;
             clip.audioData.reset();
@@ -8672,6 +8787,19 @@ namespace sampledex
         recordStartPendingRt.store(false, std::memory_order_relaxed);
         recordStartPendingBeatRt.store(recordingStartBeat, std::memory_order_relaxed);
         recordStartRequestRt.store(0, std::memory_order_relaxed);
+
+        int latencySamples = 0;
+        if (auto* device = deviceManager.getCurrentAudioDevice())
+        {
+            latencySamples = juce::jmax(0, device->getInputLatencyInSamples())
+                           + juce::jmax(0, device->getOutputLatencyInSamples())
+                           + juce::jmax(0, device->getCurrentBufferSizeSamples());
+        }
+        recordingLatencyCompensationSamplesRt.store(latencySamples, std::memory_order_relaxed);
+        const double currentTempo = juce::jmax(1.0, transport.getTempo());
+        const double sampleRate = juce::jmax(1.0, sampleRateRt.load(std::memory_order_relaxed));
+        recordingLatencyCompensationBeats = (static_cast<double>(latencySamples) / sampleRate) * (currentTempo / 60.0);
+
         transport.setRecording(true);
         for (auto* track : tracks)
             track->startRecording();
@@ -8699,7 +8827,7 @@ namespace sampledex
 
         if (recordingWasActive)
         {
-            const double clipBaseBeat = juce::jmax(0.0, juce::jmin(recordingStartBeat, recordStopBeat));
+            const double clipBaseBeat = juce::jmax(0.0, juce::jmin(recordingStartBeat, recordStopBeat) - recordingLatencyCompensationBeats);
             const double nominalTakeLength = juce::jmax(1.0, std::abs(recordStopBeat - recordingStartBeat));
 
             for (int i = 0; i < tracks.size(); ++i)
@@ -8709,7 +8837,7 @@ namespace sampledex
 
                 std::vector<TimelineEvent> recordedEvents;
                 recordedEvents.reserve(512);
-                tracks[i]->flushRecordingToClip(recordedEvents, 0.0);
+                tracks[i]->flushRecordingToClip(recordedEvents, recordingLatencyCompensationBeats);
                 if (recordedEvents.empty())
                     continue;
 
@@ -8754,9 +8882,31 @@ namespace sampledex
 
         if (!committedClips.empty())
         {
+            const bool overdubEnabled = recordOverdubEnabled;
             applyArrangementEdit("Commit Recording",
-                                 [clipsToInsert = std::move(committedClips)](std::vector<Clip>& state, int& selected) mutable
+                                 [clipsToInsert = std::move(committedClips), overdubEnabled](std::vector<Clip>& state, int& selected) mutable
                                  {
+                                     if (!overdubEnabled)
+                                     {
+                                         state.erase(std::remove_if(state.begin(), state.end(),
+                                                                    [&clipsToInsert](const Clip& existing)
+                                                                    {
+                                                                        for (const auto& incoming : clipsToInsert)
+                                                                        {
+                                                                            if (existing.trackIndex != incoming.trackIndex || existing.type != incoming.type)
+                                                                                continue;
+                                                                            const double e0 = existing.startBeat;
+                                                                            const double e1 = existing.startBeat + juce::jmax(0.0, existing.lengthBeats);
+                                                                            const double i0 = incoming.startBeat;
+                                                                            const double i1 = incoming.startBeat + juce::jmax(0.0, incoming.lengthBeats);
+                                                                            if (i1 > e0 && e1 > i0)
+                                                                                return true;
+                                                                        }
+                                                                        return false;
+                                                                    }),
+                                                   state.end());
+                                     }
+
                                      for (auto& clip : clipsToInsert)
                                          state.push_back(std::move(clip));
                                      selected = static_cast<int>(state.size()) - 1;
