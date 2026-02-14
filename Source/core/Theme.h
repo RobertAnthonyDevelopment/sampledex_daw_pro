@@ -5,22 +5,34 @@ namespace sampledex
 {
     namespace theme
     {
+        enum class ThemeMode
+        {
+            dark,
+            light
+        };
+
+        inline ThemeMode& activeThemeMode() noexcept
+        {
+            static ThemeMode mode = ThemeMode::dark;
+            return mode;
+        }
+
         struct Colours
         {
             // Backgrounds
-            static juce::Colour background()      { return juce::Colour::fromRGB(24, 27, 32); }
-            static juce::Colour panel()           { return juce::Colour::fromRGB(38, 44, 52); }
-            static juce::Colour header()          { return juce::Colour::fromRGB(49, 57, 68); }
-            static juce::Colour darker()          { return juce::Colour::fromRGB(18, 21, 25); }
-            
+            static juce::Colour background()      { return activeThemeMode() == ThemeMode::light ? juce::Colour::fromRGB(236, 240, 246) : juce::Colour::fromRGB(24, 27, 32); }
+            static juce::Colour panel()           { return activeThemeMode() == ThemeMode::light ? juce::Colour::fromRGB(248, 250, 253) : juce::Colour::fromRGB(38, 44, 52); }
+            static juce::Colour header()          { return activeThemeMode() == ThemeMode::light ? juce::Colour::fromRGB(223, 230, 240) : juce::Colour::fromRGB(49, 57, 68); }
+            static juce::Colour darker()          { return activeThemeMode() == ThemeMode::light ? juce::Colour::fromRGB(218, 224, 234) : juce::Colour::fromRGB(18, 21, 25); }
+
             // Accents
             static juce::Colour accent()          { return juce::Colour::fromRGB(255, 166, 41); }
-            static juce::Colour selection()       { return juce::Colour::fromRGB(255, 166, 41).withAlpha(0.35f); }
+            static juce::Colour selection()       { return accent().withAlpha(activeThemeMode() == ThemeMode::light ? 0.22f : 0.35f); }
             static juce::Colour playhead()        { return juce::Colour::fromRGB(255, 77, 77); }
-            
+
             // Elements
-            static juce::Colour text()            { return juce::Colour::fromRGB(235, 240, 245); }
-            static juce::Colour gridLine()        { return juce::Colour::fromRGB(210, 220, 230).withAlpha(0.14f); }
+            static juce::Colour text()            { return activeThemeMode() == ThemeMode::light ? juce::Colour::fromRGB(28, 35, 46) : juce::Colour::fromRGB(235, 240, 245); }
+            static juce::Colour gridLine()        { return (activeThemeMode() == ThemeMode::light ? juce::Colour::fromRGB(50, 66, 84) : juce::Colour::fromRGB(210, 220, 230)).withAlpha(activeThemeMode() == ThemeMode::light ? 0.15f : 0.14f); }
             static juce::Colour clipAudio()       { return juce::Colour::fromRGB(79, 133, 210); }
             static juce::Colour clipMidi()        { return juce::Colour::fromRGB(69, 179, 121); }
         };
@@ -30,6 +42,16 @@ namespace sampledex
             static constexpr int trackHeaderWidth = 200;
             static constexpr int trackHeight = 80;
             static constexpr int transportHeight = 50;
+        };
+
+        struct Spacing
+        {
+            static constexpr int xxs = 2;
+            static constexpr int xs = 4;
+            static constexpr int sm = 8;
+            static constexpr int md = 12;
+            static constexpr int lg = 16;
+            static constexpr int xl = 24;
         };
 
         struct Typography
@@ -48,7 +70,10 @@ namespace sampledex
 
             static float fromDesktopScale()
             {
-                return juce::Desktop::getInstance().getDisplays().getMainDisplay().scale;
+                if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+                    return static_cast<float>(display->scale);
+
+                return 1.0f;
             }
         };
 
@@ -57,21 +82,34 @@ namespace sampledex
         public:
             ModernLookAndFeel()
             {
-                setColour(juce::TextButton::buttonColourId, juce::Colour::fromRGB(66, 74, 88));
+                applyPalette();
+            }
+
+            void applyPalette()
+            {
+                const bool light = activeThemeMode() == ThemeMode::light;
+                setColour(juce::TextButton::buttonColourId, light ? juce::Colour::fromRGB(224, 231, 240)
+                                                                  : juce::Colour::fromRGB(66, 74, 88));
                 setColour(juce::TextButton::buttonOnColourId, Colours::accent().withSaturation(0.9f));
                 setColour(juce::TextButton::textColourOffId, Colours::text().withAlpha(0.92f));
-                setColour(juce::TextButton::textColourOnId, juce::Colours::black.withAlpha(0.86f));
+                setColour(juce::TextButton::textColourOnId, light ? juce::Colour::fromRGB(24, 28, 34)
+                                                                   : juce::Colours::black.withAlpha(0.86f));
 
-                setColour(juce::ComboBox::backgroundColourId, juce::Colour::fromRGB(34, 40, 48));
+                setColour(juce::ComboBox::backgroundColourId, light ? juce::Colour::fromRGB(242, 246, 251)
+                                                                     : juce::Colour::fromRGB(34, 40, 48));
                 setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
                 setColour(juce::ComboBox::textColourId, Colours::text().withAlpha(0.95f));
-                setColour(juce::PopupMenu::backgroundColourId, juce::Colour::fromRGB(28, 34, 42));
+                setColour(juce::PopupMenu::backgroundColourId, light ? juce::Colour::fromRGB(246, 248, 252)
+                                                                      : juce::Colour::fromRGB(28, 34, 42));
                 setColour(juce::PopupMenu::highlightedBackgroundColourId, Colours::accent().withAlpha(0.85f));
-                setColour(juce::PopupMenu::highlightedTextColourId, juce::Colour::fromRGB(20, 22, 26));
+                setColour(juce::PopupMenu::highlightedTextColourId, light ? juce::Colour::fromRGB(18, 20, 24)
+                                                                           : juce::Colour::fromRGB(20, 22, 26));
 
                 setColour(juce::Slider::trackColourId, Colours::accent().withAlpha(0.82f));
-                setColour(juce::Slider::thumbColourId, juce::Colour::fromRGB(244, 247, 255));
-                setColour(juce::Slider::backgroundColourId, juce::Colour::fromRGB(48, 56, 68));
+                setColour(juce::Slider::thumbColourId, light ? juce::Colour::fromRGB(36, 42, 52)
+                                                             : juce::Colour::fromRGB(244, 247, 255));
+                setColour(juce::Slider::backgroundColourId, light ? juce::Colour::fromRGB(212, 220, 232)
+                                                                   : juce::Colour::fromRGB(48, 56, 68));
             }
 
             void drawButtonBackground(juce::Graphics& g,
@@ -159,6 +197,22 @@ namespace sampledex
             }
 
             ModernLookAndFeel& lookAndFeel() noexcept { return lookAndFeelImpl; }
+
+            bool isLightTheme() const noexcept
+            {
+                return activeThemeMode() == ThemeMode::light;
+            }
+
+            void setLightTheme(bool shouldUseLight)
+            {
+                activeThemeMode() = shouldUseLight ? ThemeMode::light : ThemeMode::dark;
+                lookAndFeelImpl.applyPalette();
+            }
+
+            void toggleThemeMode()
+            {
+                setLightTheme(!isLightTheme());
+            }
 
             float uiScaleFor(int width) const noexcept
             {

@@ -2899,6 +2899,11 @@ namespace
 
 namespace sampledex
 {
+    static juce::String buildPrimaryShortcutMapText()
+    {
+        return "Shortcuts: Space play/stop, R record, Cmd/Ctrl+Z undo, Cmd/Ctrl+D duplicate, S split, Del delete.";
+    }
+
     MainComponent::MainComponent(bool startInSafeMode)
         : safeModeStartup(startInSafeMode),
           timeline(transport, arrangement, tracks)
@@ -3054,10 +3059,13 @@ namespace sampledex
         addAndMakeVisible(browserPanel);
         addAndMakeVisible(trackListView);
         addAndMakeVisible(timelineView);
+        timeline.setTooltip(buildPrimaryShortcutMapText());
         addAndMakeVisible(mixerView);
         
+        playButton.setButtonText("▶ Play");
         addAndMakeVisible(playButton); playButton.onClick = [this] { togglePlayback(); };
-        playButton.setTooltip("Start/stop transport. Shortcut: Space.");
+        playButton.setTooltip("Start/stop transport. Shortcut: Space. " + buildPrimaryShortcutMapText());
+        stopButton.setButtonText("■ Stop");
         addAndMakeVisible(stopButton);
         stopButton.setTooltip("Stop transport and recording state.");
         stopButton.onClick = [this]
@@ -3090,10 +3098,11 @@ namespace sampledex
             refreshStatusText();
         };
         
+        recordButton.setButtonText("● Rec");
         addAndMakeVisible(recordButton);
         recordButton.setClickingTogglesState(true);
         recordButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::red);
-        recordButton.setTooltip("Global record enable for armed tracks.");
+        recordButton.setTooltip("Global record enable for armed tracks. Shortcut: R. " + buildPrimaryShortcutMapText());
         recordButton.onClick = [this] { toggleRecord(); };
 
         addAndMakeVisible(panicButton);
@@ -3117,7 +3126,7 @@ namespace sampledex
         tempoMenuButton.onClick = [this] { showTempoMenu(); };
 
         addAndMakeVisible(clipToolsButton);
-        clipToolsButton.setTooltip("Selected clip tools: normalize, fades, gain.");
+        clipToolsButton.setTooltip("Selected clip tools: normalize, fades, gain. Shortcut: Cmd/Ctrl+Shift+T.");
         clipToolsButton.onClick = [this] { showClipToolsMenu(); };
 
         addAndMakeVisible(transportStartButton);
@@ -3166,8 +3175,10 @@ namespace sampledex
         };
         addAndMakeVisible(followPlayheadButton);
 
+        undoButton.setButtonText("↶ Undo");
         addAndMakeVisible(undoButton);
-        undoButton.setTooltip("Undo last edit (Cmd+Z).");
+        undoButton.setTooltip("Undo last edit (Cmd/Ctrl+Z). " + buildPrimaryShortcutMapText());
+        redoButton.setButtonText("↷ Redo");
         addAndMakeVisible(redoButton);
         redoButton.setTooltip("Redo edit (Cmd+Shift+Z).");
         undoButton.onClick = [this] { undoManager.undo(); rebuildRealtimeSnapshot(); };
@@ -3477,7 +3488,7 @@ namespace sampledex
 
         addAndMakeVisible(projectButton);
         projectButton.onClick = [this] { showProjectSettingsMenu(); };
-        projectButton.setTooltip("Project settings and workflow shortcuts.");
+        projectButton.setTooltip("Project settings and workflow shortcuts. Cmd/Ctrl+L toggles dark/light theme.");
 
         addAndMakeVisible(toolbarButton);
         toolbarButton.onClick = [this] { showToolbarConfigMenu(); };
@@ -3613,7 +3624,7 @@ namespace sampledex
 
         statusLabel.setJustificationType(juce::Justification::centredRight);
         statusLabel.setInterceptsMouseClicks(false, false);
-        statusLabel.setTooltip("Current selection and quick shortcuts.");
+        statusLabel.setTooltip("Current selection and quick shortcuts. " + buildPrimaryShortcutMapText());
         addAndMakeVisible(statusLabel);
 
         timeline.setBufferedToImage(true);
@@ -5700,6 +5711,15 @@ namespace sampledex
             return true;
         }
 
+        if (commandDown && pressedChar == 'l')
+        {
+            theme::ThemeManager::instance().toggleThemeMode();
+            applyUiStyling();
+            repaint();
+            refreshStatusText();
+            return true;
+        }
+
         if (commandDown && pressedChar == 'd' && selectedClipIndex >= 0)
         {
             const int clipIndex = selectedClipIndex;
@@ -5714,6 +5734,27 @@ namespace sampledex
                                      duplicate.name = state[static_cast<size_t>(clipIndex)].name + " Copy";
                                      state.insert(state.begin() + clipIndex + 1, std::move(duplicate));
                                      selected = clipIndex + 1;
+                                 });
+            return true;
+        }
+
+        if (!commandDown && pressedChar == 's' && selectedClipIndex >= 0)
+        {
+            const int clipIndex = selectedClipIndex;
+            const double splitBeat = juce::jmax(0.0, transport.getCurrentBeat());
+            applyArrangementEdit("Split Clip",
+                                 [clipIndex, splitBeat](std::vector<Clip>& state, int& selected)
+                                 {
+                                     if (!juce::isPositiveAndBelow(clipIndex, static_cast<int>(state.size())))
+                                         return;
+
+                                     auto& left = state[static_cast<size_t>(clipIndex)];
+                                     Clip right;
+                                     if (!ArrangementEditing::splitClipAtBeat(left, right, splitBeat))
+                                         return;
+
+                                     state.insert(state.begin() + clipIndex + 1, std::move(right));
+                                     selected = clipIndex;
                                  });
             return true;
         }
@@ -12015,7 +12056,8 @@ namespace sampledex
             "- Exports include a short render tail for delays/reverbs.\n\n"
             "Global Shortcuts:\n"
             "- Cmd+S = save project, Cmd+Shift+S = Save As, Cmd+O = open project\n"
-            "- Cmd+D = duplicate selected clip\n"
+            "- Cmd/Ctrl+D = duplicate selected clip\n"
+            "- S = split selected clip at playhead\n"
             "- Delete/Backspace = delete selected clip\n"
             "- Cmd+Shift+Delete = delete selected track\n"
             "- Cmd +/- = timeline horizontal zoom\n"
@@ -12028,7 +12070,9 @@ namespace sampledex
             "- Cmd+K / Cmd+I = Channel Rack / Inspector tab\n"
             "- 1 / 2 / 3 / 4 / 5 / 6 = Mixer / Piano Roll / Step Seq / Channel Rack / Inspector / Recording tabs\n\n"
             "- [ / ] = send down/up on selected track (Shift = larger step)\n"
+            "- Space = play/stop transport\n"
             "- R / M / L = toggle Record / Metronome / Loop\n"
+            "- Cmd/Ctrl+L = toggle dark/light theme\n"
             "- F = toggle timeline follow playhead\n"
             "- Home = move playhead to start\n"
             "- Left/Right = nudge selected clip (Shift for larger)\n\n"
@@ -13873,6 +13917,7 @@ namespace sampledex
 
     void MainComponent::applyUiStyling()
     {
+        const float uiScale = theme::ThemeManager::instance().uiScaleFor(getWidth());
         const auto baseButton = theme::Colours::panel().brighter(0.12f);
         const auto buttonOn = theme::Colours::accent().withBrightness(0.85f);
 
@@ -13882,6 +13927,9 @@ namespace sampledex
             button.setColour(juce::TextButton::buttonOnColourId, onColour);
             button.setColour(juce::TextButton::textColourOffId, theme::Colours::text());
             button.setColour(juce::TextButton::textColourOnId, juce::Colours::black);
+            button.setConnectedEdges(juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
+            button.setTriggeredOnMouseDown(false);
+            button.setMouseCursor(juce::MouseCursor::PointingHandCursor);
         };
 
         styleButton(playButton, baseButton, juce::Colour::fromRGB(82, 176, 112));
@@ -13953,13 +14001,13 @@ namespace sampledex
         styleCombo(midiLearnTargetSelector);
 
         masterOutLabel.setColour(juce::Label::textColourId, theme::Colours::text().withAlpha(0.85f));
-        masterOutLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
+        masterOutLabel.setFont(theme::Typography::label(uiScale));
         masterOutSlider.setColour(juce::Slider::trackColourId, theme::Colours::accent().withAlpha(0.8f));
         masterOutSlider.setColour(juce::Slider::thumbColourId, theme::Colours::accent().brighter(0.15f));
         masterOutSlider.setColour(juce::Slider::backgroundColourId, theme::Colours::panel().brighter(0.12f));
 
         auxReturnLabel.setColour(juce::Label::textColourId, theme::Colours::text().withAlpha(0.85f));
-        auxReturnLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
+        auxReturnLabel.setFont(theme::Typography::label(uiScale));
         auxReturnSlider.setColour(juce::Slider::trackColourId, theme::Colours::accent().withAlpha(0.8f));
         auxReturnSlider.setColour(juce::Slider::thumbColourId, theme::Colours::accent());
         auxReturnSlider.setColour(juce::Slider::backgroundColourId, theme::Colours::panel().brighter(0.12f));
@@ -13972,9 +14020,9 @@ namespace sampledex
         trackZoomSlider.setColour(juce::Slider::backgroundColourId, theme::Colours::panel().brighter(0.12f));
 
         statusLabel.setColour(juce::Label::textColourId, theme::Colours::text().withAlpha(0.85f));
-        statusLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
+        statusLabel.setFont(theme::Typography::label(uiScale));
         pluginScanStatusLabel.setColour(juce::Label::textColourId, theme::Colours::text().withAlpha(0.90f));
-        pluginScanStatusLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+        pluginScanStatusLabel.setFont(theme::Typography::mono(juce::jmax(0.9f, uiScale * 0.92f)));
         pluginScanStatusBar.setColour(juce::ProgressBar::foregroundColourId, theme::Colours::accent());
         pluginScanStatusBar.setColour(juce::ProgressBar::backgroundColourId, theme::Colours::panel().brighter(0.10f));
 
