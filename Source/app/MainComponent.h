@@ -14,7 +14,6 @@
 #include "TransportBar.h"
 #include "TrackList.h"
 #include "TimelineView.h"
-#include "MixerView.h"
 #include "BrowserPanel.h"
 #include "MidiDeviceRouter.h"
 #include "ChordEngine.h"
@@ -435,7 +434,6 @@ namespace sampledex
         TransportBar transportBar;
         TrackList trackListView;
         TimelineView timelineView;
-        MixerView mixerView;
         BrowserPanel browserPanel;
         juce::AudioFormatManager audioFormatManager;
         std::unique_ptr<juce::ChildProcess> pluginScanProcess;
@@ -796,14 +794,11 @@ namespace sampledex
 
         float bottomPanelRatio = 0.56f;
         float browserPanelRatio = 0.18f;
-        float mixerDockRatio = 0.20f;
         bool draggingBottomSplitter = false;
         bool draggingBrowserSplitter = false;
-        bool draggingMixerSplitter = false;
         int splitterDragMouseOffset = 0;
         juce::Rectangle<int> bottomSplitterBounds;
         juce::Rectangle<int> browserSplitterBounds;
-        juce::Rectangle<int> mixerSplitterBounds;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
     };

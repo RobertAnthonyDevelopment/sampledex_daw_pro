@@ -3059,7 +3059,6 @@ namespace sampledex
         addAndMakeVisible(browserPanel);
         addAndMakeVisible(trackListView);
         addAndMakeVisible(timelineView);
-        addAndMakeVisible(mixerView);
         
         playButton.setButtonText("▶ Play");
         addAndMakeVisible(playButton); playButton.onClick = [this] { togglePlayback(); };
@@ -5662,7 +5661,6 @@ namespace sampledex
             g.fillRect(bounds);
         };
         drawVerticalSplitter(browserSplitterBounds, draggingBrowserSplitter);
-        drawVerticalSplitter(mixerSplitterBounds, draggingMixerSplitter);
     }
 
     bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -5981,14 +5979,6 @@ namespace sampledex
             return;
         }
 
-        if (mixerSplitterBounds.expanded(3, 0).contains(e.getPosition()))
-        {
-            draggingMixerSplitter = true;
-            splitterDragMouseOffset = e.getPosition().x - mixerSplitterBounds.getCentreX();
-            setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
-            return;
-        }
-
         if (bottomSplitterBounds.expanded(0, 3).contains(e.getPosition()))
         {
             draggingBottomSplitter = true;
@@ -6010,18 +6000,6 @@ namespace sampledex
             return;
         }
 
-        if (draggingMixerSplitter)
-        {
-            const int contentWidth = getWidth();
-            const int splitterCenterX = e.getPosition().x - splitterDragMouseOffset;
-            const int rightWidth = getWidth() - splitterCenterX;
-            mixerDockRatio = juce::jlimit(0.14f, 0.34f,
-                                          static_cast<float>(rightWidth) / static_cast<float>(juce::jmax(1, contentWidth)));
-            resized();
-            repaint(mixerSplitterBounds.getUnion(mixerSplitterBounds.expanded(12, 4)));
-            return;
-        }
-
         if (!draggingBottomSplitter)
             return;
 
@@ -6039,10 +6017,9 @@ namespace sampledex
 
     void MainComponent::mouseUp(const juce::MouseEvent&)
     {
-        if (draggingBrowserSplitter || draggingMixerSplitter)
+        if (draggingBrowserSplitter)
         {
             draggingBrowserSplitter = false;
-            draggingMixerSplitter = false;
             setMouseCursor(juce::MouseCursor::NormalCursor);
             repaint();
             return;
@@ -6058,7 +6035,7 @@ namespace sampledex
 
     void MainComponent::mouseMove(const juce::MouseEvent& e)
     {
-        if (draggingBrowserSplitter || draggingMixerSplitter)
+        if (draggingBrowserSplitter)
         {
             setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
             return;
@@ -6070,8 +6047,7 @@ namespace sampledex
             return;
         }
 
-        if (browserSplitterBounds.expanded(3, 0).contains(e.getPosition())
-            || mixerSplitterBounds.expanded(3, 0).contains(e.getPosition()))
+        if (browserSplitterBounds.expanded(3, 0).contains(e.getPosition()))
         {
             setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
             return;
@@ -8598,7 +8574,6 @@ namespace sampledex
         auto content = r;
         const int splitterWidth = 8;
         const int minBrowserWidth = 180;
-        const int minMixerWidth = 220;
         const int maxBrowserWidth = juce::jmax(minBrowserWidth, content.getWidth() / 3);
         const int desiredBrowserWidth = juce::roundToInt(browserPanelRatio * static_cast<float>(content.getWidth()));
         const int browserWidth = juce::jlimit(minBrowserWidth, maxBrowserWidth, desiredBrowserWidth);
@@ -8607,14 +8582,7 @@ namespace sampledex
         browserPanel.setBounds(browserArea);
         browserSplitterBounds = content.removeFromLeft(splitterWidth);
 
-        const int maxMixerWidth = juce::jmax(minMixerWidth, content.getWidth() / 2);
-        const int desiredMixerWidth = juce::roundToInt(mixerDockRatio * static_cast<float>(getWidth()));
-        const int mixerWidth = juce::jlimit(minMixerWidth, maxMixerWidth, desiredMixerWidth);
-
-        auto centerArea = content.removeFromLeft(juce::jmax(280, content.getWidth() - mixerWidth - splitterWidth));
-        mixerSplitterBounds = content.removeFromLeft(splitterWidth);
-        auto mixerArea = content;
-        mixerView.setBounds(mixerArea.reduced(0, 2));
+        auto centerArea = content;
 
         const int trackListWidth = juce::jlimit(140, 260, juce::roundToInt(static_cast<float>(centerArea.getWidth()) * 0.18f));
         auto trackListArea = centerArea.removeFromLeft(trackListWidth);
