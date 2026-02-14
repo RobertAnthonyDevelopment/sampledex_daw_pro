@@ -2177,6 +2177,40 @@ namespace sampledex
                                                        * (lowpassCutoffHz / static_cast<float>(sr)));
             constexpr float dcBlockCoeff = 0.995f;
 
+            const auto readDelaySample = [this](const float* delayData, int baseReadPos, float frac) -> float
+            {
+                if (delayData == nullptr)
+                    return 0.0f;
+
+                const int delayBufferSize = builtInDelayBuffer.getNumSamples();
+                const auto wrapIndex = [delayBufferSize](int index) -> int
+                {
+                    if (delayBufferSize <= 0)
+                        return 0;
+                    while (index < 0)
+                        index += delayBufferSize;
+                    while (index >= delayBufferSize)
+                        index -= delayBufferSize;
+                    return index;
+                };
+
+                const int readPosM1 = wrapIndex(baseReadPos - 1);
+                const int readPos0 = wrapIndex(baseReadPos);
+                const int readPos1 = wrapIndex(baseReadPos + 1);
+                const int readPos2 = wrapIndex(baseReadPos + 2);
+
+                const float xm1 = delayData[readPosM1];
+                const float x0 = delayData[readPos0];
+                const float x1 = delayData[readPos1];
+                const float x2 = delayData[readPos2];
+
+                const float c0 = x0;
+                const float c1 = 0.5f * (x1 - xm1);
+                const float c2 = xm1 - (2.5f * x0) + (2.0f * x1) - (0.5f * x2);
+                const float c3 = (0.5f * (x2 - xm1)) + (1.5f * (x0 - x1));
+                return ((c3 * frac + c2) * frac + c1) * frac + c0;
+            };
+
             int writePos = juce::jlimit(0,
                                         builtInDelayBuffer.getNumSamples() - 1,
                                         builtInDelayWritePosition);
@@ -2202,7 +2236,6 @@ namespace sampledex
                     readIndex += static_cast<float>(builtInDelayBuffer.getNumSamples());
 
                 const int readPosA = static_cast<int>(readIndex);
-                const int readPosB = (readPosA + 1) % builtInDelayBuffer.getNumSamples();
                 const float readFrac = readIndex - static_cast<float>(readPosA);
 
                 for (int ch = 0; ch < channels; ++ch)
@@ -2213,9 +2246,7 @@ namespace sampledex
                         continue;
 
                     const float dry = write[i];
-                    const float delayedA = delayWrite[readPosA];
-                    const float delayedB = delayWrite[readPosB];
-                    const float delayed = delayedA + ((delayedB - delayedA) * readFrac);
+                    const float delayed = readDelaySample(delayWrite, readPosA, readFrac);
                     write[i] = (dry * dryGain) + (delayed * wetGain);
 
                     const auto channelIndex = static_cast<size_t>(ch);
