@@ -22,6 +22,7 @@ namespace sampledex
         {
             int slotIndex = 0;
             bool bypassed = false;
+            int hostingPolicy = static_cast<int>(Track::PluginHostingPolicy::SafeInProcess);
             juce::PluginDescription description;
             bool hasDescription = false;
             juce::String encodedState;
@@ -155,6 +156,7 @@ namespace sampledex
                     auto* slotXml = slotsXml->createNewChildElement("PLUGIN_SLOT");
                     slotXml->setAttribute("slotIndex", slot.slotIndex);
                     slotXml->setAttribute("bypassed", slot.bypassed);
+                    slotXml->setAttribute("hostingPolicy", slot.hostingPolicy);
 
                     if (slot.hasDescription)
                     {
@@ -438,6 +440,7 @@ namespace sampledex
                             PluginSlotState slot;
                             slot.slotIndex = slotXml->getIntAttribute("slotIndex", 0);
                             slot.bypassed = slotXml->getBoolAttribute("bypassed", false);
+                            slot.hostingPolicy = slotXml->getIntAttribute("hostingPolicy", static_cast<int>(Track::PluginHostingPolicy::SafeInProcess));
 
                             if (auto* descXml = slotXml->getChildByName("PLUGIN_DESCRIPTION"))
                                 slot.hasDescription = slot.description.loadFromXml(*descXml);

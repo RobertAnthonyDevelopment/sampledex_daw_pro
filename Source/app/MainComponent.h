@@ -364,6 +364,11 @@ namespace sampledex
         void unquarantinePlugin(const juce::PluginDescription& desc);
         void loadQuarantinedPlugins();
         void saveQuarantinedPlugins() const;
+        void loadPluginStabilityStats();
+        void savePluginStabilityStats() const;
+        void updatePluginStabilityForDiagnostic(const Track::PluginSlotDiagnostic& diagnostic);
+        Track::PluginHostingPolicy preferredHostingPolicyForPlugin(const juce::PluginDescription& desc) const;
+        void drainTrackPluginDiagnostics();
         bool runPluginIsolationProbe(const juce::PluginDescription& desc,
                                      bool instrumentPlugin,
                                      juce::String& errorMessage) const;
@@ -435,9 +440,17 @@ namespace sampledex
         juce::File pluginScanDeadMansPedalFile;
         juce::File pluginSessionGuardFile;
         juce::File quarantinedPluginsFile;
+        juce::File pluginStabilityFile;
         juce::File midiLearnMappingsFile;
         juce::File toolbarLayoutSettingsFile;
         juce::StringArray quarantinedPluginIds;
+        struct PluginStabilityStats
+        {
+            int crashCount = 0;
+            int successCount = 0;
+            juce::String lastCrashSummary;
+        };
+        std::map<juce::String, PluginStabilityStats> pluginStabilityById;
         juce::File appDataDir;
         juce::File autosaveProjectFile;
         bool recoveryPromptPending = false;
