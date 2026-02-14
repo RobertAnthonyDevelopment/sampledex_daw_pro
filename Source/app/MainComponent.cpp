@@ -963,8 +963,9 @@ namespace
                 addAndMakeVisible(openButton);
 
                 auto& bypassButton = bypassButtons[static_cast<size_t>(i)];
-                bypassButton.setButtonText("Byp");
+                bypassButton.setButtonText("On");
                 bypassButton.setClickingTogglesState(true);
+                bypassButton.setTooltip("Plugin power. Off bypasses the plugin but keeps the UI available.");
                 bypassButton.onClick = [this, i]
                 {
                     if (onBypassChanged && trackIndex >= 0)
@@ -1288,6 +1289,7 @@ namespace
                     openButtons[static_cast<size_t>(i)].setEnabled(false);
                     bypassButtons[static_cast<size_t>(i)].setEnabled(false);
                     bypassButtons[static_cast<size_t>(i)].setToggleState(false, juce::dontSendNotification);
+                    bypassButtons[static_cast<size_t>(i)].setButtonText("Off");
                     clearButtons[static_cast<size_t>(i)].setEnabled(false);
                     moveUpButtons[static_cast<size_t>(i)].setEnabled(false);
                     moveDownButtons[static_cast<size_t>(i)].setEnabled(false);
@@ -1321,6 +1323,7 @@ namespace
                 const int mappedSlotIndex = displayIndexToSlotIndex(i);
                 const auto name = track->getPluginNameForSlotNonBlocking(mappedSlotIndex);
                 const bool hasPlugin = track->hasPluginInSlotNonBlocking(mappedSlotIndex);
+                const bool bypassed = hasPlugin && track->isPluginSlotBypassedNonBlocking(mappedSlotIndex);
                 slotLabels[static_cast<size_t>(i)].setText(displayIndexToLabel(i) + ": "
                                                            + (hasPlugin ? name : juce::String("Empty")),
                                                            juce::dontSendNotification);
@@ -1332,8 +1335,8 @@ namespace
                 bypassButtons[static_cast<size_t>(i)].setEnabled(hasPlugin);
                 moveUpButtons[static_cast<size_t>(i)].setEnabled(hasPlugin && i > 1);
                 moveDownButtons[static_cast<size_t>(i)].setEnabled(hasPlugin && i > 0 && i < slotCount - 1);
-                bypassButtons[static_cast<size_t>(i)].setToggleState(hasPlugin && track->isPluginSlotBypassedNonBlocking(mappedSlotIndex),
-                                                                     juce::dontSendNotification);
+                bypassButtons[static_cast<size_t>(i)].setToggleState(bypassed, juce::dontSendNotification);
+                bypassButtons[static_cast<size_t>(i)].setButtonText(!hasPlugin ? "Off" : (bypassed ? "Off" : "On"));
             }
         }
 
@@ -1579,8 +1582,9 @@ namespace
                 addAndMakeVisible(loadButton);
 
                 auto& bypassButton = bypassButtons[static_cast<size_t>(i)];
-                bypassButton.setButtonText("Byp");
+                bypassButton.setButtonText("On");
                 bypassButton.setClickingTogglesState(true);
+                bypassButton.setTooltip("Plugin power. Off bypasses the plugin but keeps the UI available.");
                 bypassButton.onClick = [this, i]
                 {
                     if (trackIndex >= 0 && onBypassChanged)
@@ -1959,6 +1963,7 @@ namespace
                 {
                     slotButtons[static_cast<size_t>(i)].setButtonText(displayIndexToLabel(i) + ": Empty");
                     bypassButtons[static_cast<size_t>(i)].setToggleState(false, juce::dontSendNotification);
+                    bypassButtons[static_cast<size_t>(i)].setButtonText("Off");
                 }
                 return;
             }
@@ -1997,6 +2002,7 @@ namespace
             {
                 const int mappedSlotIndex = displayIndexToSlotIndex(i);
                 const bool hasPlugin = track->hasPluginInSlotNonBlocking(mappedSlotIndex);
+                const bool bypassed = hasPlugin && track->isPluginSlotBypassedNonBlocking(mappedSlotIndex);
                 const auto name = hasPlugin ? track->getPluginNameForSlotNonBlocking(mappedSlotIndex) : juce::String("Empty");
                 slotButtons[static_cast<size_t>(i)].setButtonText(displayIndexToLabel(i) + ": " + name);
                 slotButtons[static_cast<size_t>(i)].setColour(juce::TextButton::buttonColourId,
@@ -2006,8 +2012,8 @@ namespace
                 clearButtons[static_cast<size_t>(i)].setEnabled(hasPlugin);
                 moveUpButtons[static_cast<size_t>(i)].setEnabled(hasPlugin && i > 1);
                 moveDownButtons[static_cast<size_t>(i)].setEnabled(hasPlugin && i > 0 && i < slotCount - 1);
-                bypassButtons[static_cast<size_t>(i)].setToggleState(hasPlugin && track->isPluginSlotBypassedNonBlocking(mappedSlotIndex),
-                                                                     juce::dontSendNotification);
+                bypassButtons[static_cast<size_t>(i)].setToggleState(bypassed, juce::dontSendNotification);
+                bypassButtons[static_cast<size_t>(i)].setButtonText(!hasPlugin ? "Off" : (bypassed ? "Off" : "On"));
             }
         }
 
@@ -14455,9 +14461,11 @@ namespace sampledex
                 const juce::String slotLabel = (pluginEditorSlotIndex == Track::instrumentSlotIndex)
                     ? juce::String("Instrument")
                     : juce::String("Insert " + juce::String(pluginEditorSlotIndex + 1));
+                const bool bypassed = track->isPluginSlotBypassedNonBlocking(pluginEditorSlotIndex);
                 pluginEditorWindow->setName(track->getTrackName()
                                             + "  |  " + slotLabel
-                                            + "  |  " + pluginName);
+                                            + "  |  " + pluginName
+                                            + (bypassed ? "  |  Off" : "  |  On"));
             }
         }
 
@@ -14543,8 +14551,10 @@ namespace sampledex
         const juce::String slotLabel = (resolvedSlot == Track::instrumentSlotIndex)
             ? juce::String("Instrument")
             : juce::String("Insert " + juce::String(resolvedSlot + 1));
+        const bool bypassed = track->isPluginSlotBypassedNonBlocking(resolvedSlot);
         const juce::String title = track->getTrackName() + "  |  " + slotLabel
-                                 + "  |  " + pluginName;
+                                 + "  |  " + pluginName
+                                 + (bypassed ? "  |  Off" : "  |  On");
         const auto creationToken = ++pluginEditorWindowToken;
         pluginEditorWindow = std::make_unique<FloatingPluginWindow>(
             title,
@@ -14758,6 +14768,26 @@ namespace sampledex
                 eqWindow->setName("Track EQ");
             auto* eqContent = dynamic_cast<TrackEqContent*>(eqWindow->getContentComponent());
             updateEq(eqContent, eqTrackIndex);
+        }
+
+        if (pluginEditorWindow != nullptr
+            && juce::isPositiveAndBelow(pluginEditorTrackIndex, tracks.size()))
+        {
+            auto* track = tracks[pluginEditorTrackIndex];
+            if (track != nullptr && track->hasPluginInSlotNonBlocking(pluginEditorSlotIndex))
+            {
+                juce::String pluginName = track->getPluginNameForSlotNonBlocking(pluginEditorSlotIndex);
+                if (pluginName.isEmpty())
+                    pluginName = "Plugin";
+                const juce::String slotLabel = (pluginEditorSlotIndex == Track::instrumentSlotIndex)
+                    ? juce::String("Instrument")
+                    : juce::String("Insert " + juce::String(pluginEditorSlotIndex + 1));
+                const bool bypassed = track->isPluginSlotBypassedNonBlocking(pluginEditorSlotIndex);
+                pluginEditorWindow->setName(track->getTrackName()
+                                            + "  |  " + slotLabel
+                                            + "  |  " + pluginName
+                                            + (bypassed ? "  |  Off" : "  |  On"));
+            }
         }
     }
 

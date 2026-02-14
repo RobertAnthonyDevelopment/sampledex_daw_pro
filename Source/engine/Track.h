@@ -955,12 +955,14 @@ namespace sampledex
             if (slotIndex == instrumentSlotIndex)
             {
                 instrumentSlot.bypassed = shouldBypass;
+                updatePluginUiCacheLocked();
                 return;
             }
 
             if (!juce::isPositiveAndBelow(slotIndex, maxInsertSlots))
                 return;
             pluginSlots[static_cast<size_t>(slotIndex)].bypassed = shouldBypass;
+            updatePluginUiCacheLocked();
         }
 
         void clearPluginSlot(int slotIndex)
@@ -1426,6 +1428,11 @@ namespace sampledex
             }
 
             pluginProcessBuffer.clear();
+            juce::MidiBuffer instrumentMidi;
+            instrumentMidi.addEvents(midi, 0, requiredSamples, 0);
+            juce::MidiBuffer insertMidi;
+            insertMidi.addEvents(midi, 0, requiredSamples, 0);
+
             const bool monitorInputActive = inputMonitoring.load(std::memory_order_relaxed)
                                             && monitoredInput != nullptr
                                             && monitoredInput->getNumChannels() > 0
@@ -1545,7 +1552,7 @@ namespace sampledex
                 if (instrumentSlot.instance != nullptr && !instrumentSlot.bypassed)
                 {
                     if (getUsableMainOutputChannels(*instrumentSlot.instance) > 0)
-                        instrumentSlot.instance->processBlock(pluginProcessBuffer, midi);
+                        instrumentSlot.instance->processBlock(pluginProcessBuffer, instrumentMidi);
                     else
                         instrumentSlot.bypassed = true;
                 }
@@ -1575,7 +1582,7 @@ namespace sampledex
                         slot.bypassed = true;
                         continue;
                     }
-                    slot.instance->processBlock(pluginProcessBuffer, midi);
+                    slot.instance->processBlock(pluginProcessBuffer, insertMidi);
                 }
 
                 // 2b. Built-in DSP essentials (toggleable track-local effects).
