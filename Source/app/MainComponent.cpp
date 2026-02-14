@@ -169,6 +169,12 @@ namespace
                                              double beatsPerSample,
                                              float inSample) noexcept
     {
+        auto smoothFade = [] (double x) noexcept -> float
+        {
+            const double clamped = juce::jlimit(0.0, 1.0, x);
+            return static_cast<float>(0.5 - (0.5 * std::cos(clamped * juce::MathConstants<double>::pi)));
+        };
+
         constexpr int microFadeSamples = 48;
         const double microFadeBeats = static_cast<double>(microFadeSamples) * beatsPerSample;
         if (microFadeBeats <= 0.0)
@@ -176,13 +182,37 @@ namespace
 
         float fade = 1.0f;
         if (beatInClip < microFadeBeats)
-            fade = juce::jmin(fade, static_cast<float>(juce::jlimit(0.0, 1.0, beatInClip / microFadeBeats)));
+            fade = juce::jmin(fade, smoothFade(beatInClip / microFadeBeats));
 
         const double beatsToEnd = juce::jmax(0.0, clipLengthBeats - beatInClip);
         if (beatsToEnd < microFadeBeats)
-            fade = juce::jmin(fade, static_cast<float>(juce::jlimit(0.0, 1.0, beatsToEnd / microFadeBeats)));
+            fade = juce::jmin(fade, smoothFade(beatsToEnd / microFadeBeats));
 
         return inSample * fade;
+    }
+
+    static inline float computeClipFadeGain(double beatInClip,
+                                            double clipLengthBeats,
+                                            double fadeInBeats,
+                                            double fadeOutBeats) noexcept
+    {
+        auto equalPowerIn = [] (double x) noexcept -> float
+        {
+            const double clamped = juce::jlimit(0.0, 1.0, x);
+            return static_cast<float>(std::sin(0.5 * juce::MathConstants<double>::pi * clamped));
+        };
+
+        float fadeGain = 1.0f;
+        if (fadeInBeats > 0.0)
+            fadeGain = juce::jmin(fadeGain, equalPowerIn(beatInClip / fadeInBeats));
+
+        if (fadeOutBeats > 0.0)
+        {
+            const double beatsToEnd = juce::jmax(0.0, clipLengthBeats - beatInClip);
+            fadeGain = juce::jmin(fadeGain, equalPowerIn(beatsToEnd / fadeOutBeats));
+        }
+
+        return fadeGain;
     }
 
     static inline float processSoftClipOversampled2x(float sample,
@@ -6783,14 +6813,10 @@ namespace sampledex
                     {
                         if (sourcePosition >= static_cast<double>(clipNumSamples - 1))
                             break;
-                        float fadeGain = 1.0f;
-                        if (fadeInBeats > 0.0)
-                            fadeGain = juce::jmin(fadeGain, static_cast<float>(juce::jlimit(0.0, 1.0, beatInClip / fadeInBeats)));
-                        if (fadeOutBeats > 0.0)
-                        {
-                            const double beatsToEnd = juce::jmax(0.0, clip.lengthBeats - beatInClip);
-                            fadeGain = juce::jmin(fadeGain, static_cast<float>(juce::jlimit(0.0, 1.0, beatsToEnd / fadeOutBeats)));
-                        }
+                        const float fadeGain = computeClipFadeGain(beatInClip,
+                                                                    clip.lengthBeats,
+                                                                    fadeInBeats,
+                                                                    fadeOutBeats);
                         const float sampleGain = baseGain * fadeGain;
                         const double beatsPerSample = beatStep;
                         const int writeIndex = targetStartSample + sampleIdx;
