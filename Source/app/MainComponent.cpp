@@ -191,18 +191,6 @@ namespace
         return std::sin(clamped * static_cast<float>(juce::MathConstants<double>::halfPi));
     }
 
-    static inline float processSoftClipOversampled2x(float sample,
-                                                     float drive,
-                                                     float normaliser,
-                                                     float& prevInput) noexcept
-    {
-        const float midpoint = 0.5f * (prevInput + sample);
-        const float clippedMid = std::tanh(midpoint * drive) / normaliser;
-        const float clippedNow = std::tanh(sample * drive) / normaliser;
-        prevInput = sample;
-        return 0.5f * (clippedMid + clippedNow);
-    }
-
     static inline std::uint32_t nextDitherState(std::uint32_t& state) noexcept
     {
         state = (state * 1664525u) + 1013904223u;
@@ -549,104 +537,6 @@ namespace
         const bool inUpperSegment = beat + eps >= startBeat && beat < loopEndBeat + eps;
         const bool inLowerSegment = beat + eps >= loopStartBeat && beat < endBeat + eps;
         return inUpperSegment || inLowerSegment;
-    }
-
-    struct RealtimeTrackGraphJob
-    {
-        sampledex::Track* track = nullptr;
-        juce::AudioBuffer<float>* mainBuffer = nullptr;
-        const juce::AudioBuffer<float>* sourceAudio = nullptr;
-        juce::AudioBuffer<float>* sendBuffer = nullptr;
-        juce::MidiBuffer* midi = nullptr;
-        const juce::AudioBuffer<float>* monitorInput = nullptr;
-        int blockSamples = 0;
-        bool processTrack = false;
-        bool monitorSafeInput = false;
-    };
-
-    static void runRealtimeTrackGraphJob(void* context, int index)
-    {
-        if (context == nullptr || index < 0)
-            return;
-
-        auto* jobs = static_cast<RealtimeTrackGraphJob*>(context);
-        auto& job = jobs[index];
-        if (!job.processTrack
-            || job.track == nullptr
-            || job.mainBuffer == nullptr
-            || job.sendBuffer == nullptr
-            || job.midi == nullptr)
-        {
-            return;
-        }
-
-        const int blockSamples = juce::jmax(0, job.blockSamples);
-        if (blockSamples <= 0)
-        {
-            job.mainBuffer->clear();
-            job.sendBuffer->clear();
-            return;
-        }
-
-        job.mainBuffer->clear();
-        job.sendBuffer->clear();
-
-        constexpr int maxViewChannels = 16;
-        const int mainChannels = juce::jmin(job.mainBuffer->getNumChannels(), maxViewChannels);
-        const int sendChannels = juce::jmin(job.sendBuffer->getNumChannels(), maxViewChannels);
-        if (mainChannels <= 0 || sendChannels <= 0)
-            return;
-
-        std::array<float*, static_cast<size_t>(maxViewChannels)> mainPtrs {};
-        std::array<float*, static_cast<size_t>(maxViewChannels)> sendPtrs {};
-        for (int ch = 0; ch < mainChannels; ++ch)
-            mainPtrs[static_cast<size_t>(ch)] = job.mainBuffer->getWritePointer(ch);
-        for (int ch = 0; ch < sendChannels; ++ch)
-            sendPtrs[static_cast<size_t>(ch)] = job.sendBuffer->getWritePointer(ch);
-
-        juce::AudioBuffer<float> mainView(mainPtrs.data(), mainChannels, blockSamples);
-        juce::AudioBuffer<float> sendView(sendPtrs.data(), sendChannels, blockSamples);
-
-        juce::AudioBuffer<float> sourceView;
-        const juce::AudioBuffer<float>* sourceViewPtr = nullptr;
-        std::array<float*, static_cast<size_t>(maxViewChannels)> sourcePtrs {};
-        if (job.sourceAudio != nullptr && job.sourceAudio->getNumChannels() > 0)
-        {
-            const int sourceChannels = juce::jmin(job.sourceAudio->getNumChannels(), maxViewChannels);
-            const int sourceSamples = juce::jmin(job.sourceAudio->getNumSamples(), blockSamples);
-            if (sourceChannels > 0 && sourceSamples > 0)
-            {
-                for (int ch = 0; ch < sourceChannels; ++ch)
-                    sourcePtrs[static_cast<size_t>(ch)] = const_cast<float*>(job.sourceAudio->getReadPointer(ch));
-                sourceView.setDataToReferTo(sourcePtrs.data(), sourceChannels, sourceSamples);
-                sourceViewPtr = &sourceView;
-            }
-        }
-
-        juce::AudioBuffer<float> monitorView;
-        const juce::AudioBuffer<float>* monitorViewPtr = nullptr;
-        std::array<float*, static_cast<size_t>(maxViewChannels)> monitorPtrs {};
-        if (job.monitorInput != nullptr && job.monitorInput->getNumChannels() > 0)
-        {
-            const int monitorChannels = juce::jmin(job.monitorInput->getNumChannels(), maxViewChannels);
-            const int monitorSamples = juce::jmin(job.monitorInput->getNumSamples(), blockSamples);
-            if (monitorChannels > 0 && monitorSamples > 0)
-            {
-                for (int ch = 0; ch < monitorChannels; ++ch)
-                    monitorPtrs[static_cast<size_t>(ch)] = const_cast<float*>(job.monitorInput->getReadPointer(ch));
-                monitorView.setDataToReferTo(monitorPtrs.data(), monitorChannels, monitorSamples);
-                monitorViewPtr = &monitorView;
-            }
-        }
-
-        job.track->processBlockAndSends(mainView,
-                                        sendView,
-                                        *job.midi,
-                                        sourceViewPtr,
-                                        monitorViewPtr,
-                                        job.monitorSafeInput);
-        sanitizeAudioBuffer(mainView, blockSamples);
-        sanitizeAudioBuffer(sendView, blockSamples);
     }
 
     constexpr int monitorAnalyzerFftOrder = 11;
@@ -5359,13 +5249,7 @@ namespace sampledex
         closePluginEditorWindow();
         closeEqWindow();
         closeChannelRackWindow();
-        {
-            const juce::ScopedLock sl(retiredSnapshotLock);
-            retiredRealtimeSnapshots.clear();
-        }
-        std::atomic_store_explicit(&realtimeSnapshot,
-                                   std::shared_ptr<const RealtimeStateSnapshot>{},
-                                   std::memory_order_release);
+        realtimeSnapshotState.clear();
         streamingClipCache.clear();
         if (autosaveProjectFile != juce::File())
             autosaveProjectFile.deleteFile();
@@ -7041,77 +6925,47 @@ namespace sampledex
             }
         }
 
-        const bool useParallelGraph = !offlineRenderActive
-                                   && !lowLatencyProcessing
-                                   && bufferToFill.numSamples >= 256
-                                   && realtimeGraphScheduler.getWorkerCount() > 0
-                                   && activeTrackCount >= 4;
-        if (useParallelGraph)
-            realtimeGraphScheduler.run(activeTrackCount, trackGraphJobs.data(), &runRealtimeTrackGraphJob);
-        else
-            for (int i = 0; i < activeTrackCount; ++i)
-                runRealtimeTrackGraphJob(trackGraphJobs.data(), i);
+        TransportBlockContext transportBlockContext {};
+        transportBlockContext.numSamples = bufferToFill.numSamples;
+        transportBlockContext.sampleRate = sampleRate;
+        transportBlockContext.lowLatencyProcessing = lowLatencyProcessing;
+        transportBlockContext.offlineRenderActive = offlineRenderActive;
 
-        for (int i = 0; i < activeTrackCount; ++i)
-        {
-            const auto& job = trackGraphJobs[static_cast<size_t>(i)];
-            if (!job.processTrack
-                || !trackGraphAudible[static_cast<size_t>(i)]
-                || job.mainBuffer == nullptr
-                || job.sendBuffer == nullptr)
-            {
-                continue;
-            }
+        RealtimeMixInputs mixInputs {};
+        mixInputs.activeTrackCount = activeTrackCount;
+        mixInputs.builtInFailSafe = builtInFailSafe;
+        mixInputs.pdcReady = pdcReady;
+        mixInputs.trackGraphAudible = &trackGraphAudible;
+        mixInputs.trackMonitorInputUsed = &trackMonitorInputUsed;
+        mixInputs.trackSendFeedbackBlocked = &trackSendFeedbackBlocked;
+        mixInputs.trackOutputToBus = &trackOutputToBus;
+        mixInputs.trackSendBusIndex = &trackSendBusIndex;
+        mixInputs.trackOutputBusIndex = &trackOutputBusIndex;
+        mixInputs.trackMainPathLatencySamples = &trackMainPathLatencySamples;
+        mixInputs.trackSendPathLatencySamples = &trackSendPathLatencySamples;
+        mixInputs.trackSendPathActive = &trackSendPathActive;
+        mixInputs.maxGraphLatencySamples = maxGraphLatencySamples;
 
-            auto& processedTrackAudio = *job.mainBuffer;
-            auto& processedTrackSend = *job.sendBuffer;
-
-            if (builtInFailSafe && trackMonitorInputUsed[static_cast<size_t>(i)])
-            {
-                // Prevent live-monitor feedback loops from entering aux returns on built-in mic paths.
-                processedTrackSend.clear();
-            }
-
-            if (pdcReady)
-            {
-                const int mainDelaySamples = juce::jmax(0,
-                                                        maxGraphLatencySamples
-                                                            - trackMainPathLatencySamples[static_cast<size_t>(i)]);
-                const int sendDelaySamples = trackSendPathActive[static_cast<size_t>(i)]
-                    ? juce::jmax(0,
-                                 maxGraphLatencySamples
-                                     - trackSendPathLatencySamples[static_cast<size_t>(i)])
-                    : 0;
-                applyTrackDelayCompensation(i,
-                                            mainDelaySamples,
-                                            sendDelaySamples,
-                                            bufferToFill.numSamples,
-                                            processedTrackAudio,
-                                            processedTrackSend);
-            }
-
-            if (!trackSendFeedbackBlocked[static_cast<size_t>(i)])
-            {
-                auto& targetAuxBus = auxBusBuffers[static_cast<size_t>(trackSendBusIndex[static_cast<size_t>(i)])];
-                const int sendChannels = juce::jmin(targetAuxBus.getNumChannels(), processedTrackSend.getNumChannels());
-                for (int ch = 0; ch < sendChannels; ++ch)
-                    targetAuxBus.addFrom(ch, 0, processedTrackSend, ch, 0, bufferToFill.numSamples);
-            }
-
-            if (trackOutputToBus[static_cast<size_t>(i)])
-            {
-                auto& outputBus = auxBusBuffers[static_cast<size_t>(trackOutputBusIndex[static_cast<size_t>(i)])];
-                const int mixChannels = juce::jmin(outputBus.getNumChannels(), processedTrackAudio.getNumChannels());
-                for (int ch = 0; ch < mixChannels; ++ch)
-                    outputBus.addFrom(ch, 0, processedTrackAudio, ch, 0, bufferToFill.numSamples);
-            }
-            else
-            {
-                const int mixChannels = juce::jmin(tempMixingBuffer.getNumChannels(), processedTrackAudio.getNumChannels());
-                for (int ch = 0; ch < mixChannels; ++ch)
-                    tempMixingBuffer.addFrom(ch, 0, processedTrackAudio, ch, 0, bufferToFill.numSamples);
-            }
-        }
+        RealtimeAudioEngine::runTrackGraph(realtimeGraphScheduler,
+                                           transportBlockContext,
+                                           mixInputs,
+                                           trackGraphJobs,
+                                           tempMixingBuffer,
+                                           auxBusBuffers,
+                                           [this](int trackIndex,
+                                                  int mainDelaySamples,
+                                                  int sendDelaySamples,
+                                                  int blockSamples,
+                                                  juce::AudioBuffer<float>& mainBuffer,
+                                                  juce::AudioBuffer<float>& sendBuffer)
+                                           {
+                                               applyTrackDelayCompensation(trackIndex,
+                                                                           mainDelaySamples,
+                                                                           sendDelaySamples,
+                                                                           blockSamples,
+                                                                           mainBuffer,
+                                                                           sendBuffer);
+                                           });
         
         // 8. Aux Effects
         const bool auxEnabled = auxFxEnabledRt.load(std::memory_order_relaxed);
@@ -7346,140 +7200,34 @@ namespace sampledex
         if (startupSafetyBlocksRemainingRt.load(std::memory_order_relaxed) > 0)
             startupSafetyBlocksRemainingRt.fetch_sub(1, std::memory_order_relaxed);
 
-        const float targetMasterGain = masterOutputGainRt.load(std::memory_order_relaxed);
-        const bool useSoftClip = masterSoftClipEnabledRt.load(std::memory_order_relaxed);
-        const bool limiterEnabled = masterLimiterEnabledRt.load(std::memory_order_relaxed);
-        constexpr float softClipDrive = 1.34f;
-        const float softClipNormaliser = std::tanh(softClipDrive);
-        constexpr float limiterCeiling = 0.972f;
-        const double limiterSampleRate = juce::jmax(1.0, sampleRateRt.load(std::memory_order_relaxed));
-        const float limiterAttack = static_cast<float>(1.0 - std::exp(-1.0 / (limiterSampleRate * 0.0015)));
-        const float limiterRelease = static_cast<float>(1.0 - std::exp(-1.0 / (limiterSampleRate * 0.045)));
-        const float limiterRecovery = static_cast<float>(1.0 - std::exp(-1.0 / (limiterSampleRate * 0.030)));
-        const float dezipperCoeff = masterGainDezipperCoeff > 0.0f
-            ? masterGainDezipperCoeff
-            : 0.0015f;
+        RealtimeMixInputs outputMixInputs {};
+        outputMixInputs.targetMasterGain = masterOutputGainRt.load(std::memory_order_relaxed);
+        outputMixInputs.useSoftClip = masterSoftClipEnabledRt.load(std::memory_order_relaxed);
+        outputMixInputs.limiterEnabled = masterLimiterEnabledRt.load(std::memory_order_relaxed);
+        outputMixInputs.masterGainDezipperCoeff = masterGainDezipperCoeff > 0.0f ? masterGainDezipperCoeff : 0.0015f;
+        outputMixInputs.softClipDrive = monitorSafeModeRt.load(std::memory_order_relaxed) ? 1.22f : 1.15f;
+        outputMixInputs.softClipNormaliser = 1.0f / std::tanh(outputMixInputs.softClipDrive);
+        outputMixInputs.limiterCeiling = 0.985f;
+        outputMixInputs.limiterAttack = 0.45f;
+        outputMixInputs.limiterRelease = 0.0025f;
+        outputMixInputs.limiterRecovery = 0.015f;
+        outputMixInputs.outputDcHighPassEnabled = outputDcHighPassEnabledRt.load(std::memory_order_relaxed);
 
-        for (int i = 0; i < bufferToFill.numSamples; ++i)
-        {
-            masterGainSmoothingState += (targetMasterGain - masterGainSmoothingState) * dezipperCoeff;
+        RealtimeMixOutputs outputMixOutputs {};
+        RealtimeAudioEngine::applyOutputLimiting(transportBlockContext,
+                                                 outputMixInputs,
+                                                 *bufferToFill.buffer,
+                                                 bufferToFill.startSample,
+                                                 masterGainSmoothingState,
+                                                 masterLimiterGainState,
+                                                 masterLimiterPrevInput,
+                                                 masterTruePeakMidpointPrevInput,
+                                                 outputDcPrevInput,
+                                                 outputDcPrevOutput,
+                                                 outputMixOutputs);
 
-            float overPeak = 0.0f;
-            for (int ch = 0; ch < outputChannels; ++ch)
-            {
-                auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                if (write == nullptr)
-                    continue;
-
-                float sample = write[i] * masterGainSmoothingState;
-                if (useSoftClip)
-                {
-                    auto& prevIn = masterTruePeakMidpointPrevInput[static_cast<size_t>(juce::jmin(ch, 1))];
-                    sample = processSoftClipOversampled2x(sample, softClipDrive, softClipNormaliser, prevIn);
-                }
-
-                write[i] = sample;
-                const float midpoint = 0.5f * (masterLimiterPrevInput[static_cast<size_t>(juce::jmin(ch, 1))] + sample);
-                overPeak = juce::jmax(overPeak, std::abs(sample));
-                overPeak = juce::jmax(overPeak, std::abs(midpoint));
-            }
-
-            if (limiterEnabled)
-            {
-                const float targetGain = overPeak > limiterCeiling ? (limiterCeiling / overPeak) : 1.0f;
-                if (targetGain < masterLimiterGainState)
-                    masterLimiterGainState += (targetGain - masterLimiterGainState) * limiterAttack;
-                else
-                    masterLimiterGainState += (targetGain - masterLimiterGainState) * limiterRelease;
-            }
-            else
-            {
-                masterLimiterGainState += (1.0f - masterLimiterGainState) * limiterRecovery;
-            }
-
-            for (int ch = 0; ch < outputChannels; ++ch)
-            {
-                auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                if (write == nullptr)
-                    continue;
-
-                float limited = write[i] * masterLimiterGainState;
-                limited = juce::jlimit(-limiterCeiling, limiterCeiling, limited);
-                if (std::abs(limited) < 1.0e-24f)
-                    limited = 0.0f;
-                write[i] = limited;
-                masterLimiterPrevInput[static_cast<size_t>(juce::jmin(ch, 1))] = limited;
-            }
-        }
-
-        if (!limiterEnabled)
-        {
-            masterLimiterPrevInput = { 0.0f, 0.0f };
-            masterLimiterGainState = 1.0f;
-        }
-
-        if (!useSoftClip)
-            masterTruePeakMidpointPrevInput = { 0.0f, 0.0f };
-
-        if (outputDcHighPassEnabledRt.load(std::memory_order_relaxed))
-        {
-            constexpr float dcBlockCoeff = 0.995f;
-            for (int ch = 0; ch < juce::jmin(outputChannels, 2); ++ch)
-            {
-                auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                if (write == nullptr)
-                    continue;
-
-                float prevIn = outputDcPrevInput[static_cast<size_t>(ch)];
-                float prevOut = outputDcPrevOutput[static_cast<size_t>(ch)];
-                for (int i = 0; i < bufferToFill.numSamples; ++i)
-                {
-                    const float in = write[i];
-                    const float out = in - prevIn + (dcBlockCoeff * prevOut);
-                    write[i] = out;
-                    prevIn = in;
-                    prevOut = out;
-                }
-                outputDcPrevInput[static_cast<size_t>(ch)] = prevIn;
-                outputDcPrevOutput[static_cast<size_t>(ch)] = prevOut;
-            }
-        }
-        else
-        {
-            outputDcPrevInput = { 0.0f, 0.0f };
-            outputDcPrevOutput = { 0.0f, 0.0f };
-        }
-
-        if (builtInFailSafe && monitoredTrackInputActive && !isPlaying && !recordingCaptureActive)
-        {
-            for (int ch = 0; ch < outputChannels; ++ch)
-                bufferToFill.buffer->applyGain(ch, bufferToFill.startSample, bufferToFill.numSamples, 0.0f);
-        }
-
-        bool severeOutputFault = false;
-        constexpr float hardOutputClamp = 1.25f;
-        constexpr float faultThreshold = 24.0f;
-        for (int ch = 0; ch < outputChannels; ++ch)
-        {
-            auto* write = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-            if (write == nullptr)
-                continue;
-
-            for (int i = 0; i < bufferToFill.numSamples; ++i)
-            {
-                float sample = write[i];
-                if (!std::isfinite(sample) || std::abs(sample) > faultThreshold)
-                {
-                    severeOutputFault = true;
-                    sample = 0.0f;
-                }
-                else
-                {
-                    sample = juce::jlimit(-hardOutputClamp, hardOutputClamp, sample);
-                }
-                write[i] = sample;
-            }
-        }
+        juce::ignoreUnused(outputMixOutputs.outputChannels);
+        const bool severeOutputFault = outputMixOutputs.severeOutputFault;
 
         if (severeOutputFault)
         {
@@ -12752,13 +12500,7 @@ namespace sampledex
         resetAutomationLatchStates();
         automationWriteReadIndex.store(0, std::memory_order_relaxed);
         automationWriteWriteIndex.store(0, std::memory_order_relaxed);
-        {
-            const juce::ScopedLock sl(retiredSnapshotLock);
-            retiredRealtimeSnapshots.clear();
-        }
-        std::atomic_store_explicit(&realtimeSnapshot,
-                                   std::shared_ptr<const RealtimeStateSnapshot>{},
-                                   std::memory_order_release);
+        realtimeSnapshotState.clear();
         streamingClipCache.clear();
         rebuildRealtimeSnapshot(false);
     }
@@ -13639,57 +13381,20 @@ namespace sampledex
         }
 
         auto newSnapshot = std::static_pointer_cast<const RealtimeStateSnapshot>(snapshot);
-        auto previousSnapshot = std::atomic_exchange_explicit(&realtimeSnapshot,
-                                                              std::move(newSnapshot),
-                                                              std::memory_order_acq_rel);
-        if (previousSnapshot != nullptr)
-            retireRealtimeSnapshot(std::move(previousSnapshot));
+        realtimeSnapshotState.storeSnapshot(std::move(newSnapshot));
 
         if (markDirty)
             markProjectDirty();
     }
 
-    std::shared_ptr<const MainComponent::RealtimeStateSnapshot> MainComponent::getRealtimeSnapshot() const
+    std::shared_ptr<const RealtimeStateSnapshot> MainComponent::getRealtimeSnapshot() const
     {
-        return std::atomic_load_explicit(&realtimeSnapshot, std::memory_order_acquire);
-    }
-
-    void MainComponent::retireRealtimeSnapshot(std::shared_ptr<const RealtimeStateSnapshot> snapshot)
-    {
-        if (snapshot == nullptr)
-            return;
-
-        const juce::ScopedLock sl(retiredSnapshotLock);
-        retiredRealtimeSnapshots.push_back(std::move(snapshot));
+        return realtimeSnapshotState.getSnapshot();
     }
 
     void MainComponent::drainRetiredRealtimeSnapshots()
     {
-        std::vector<std::shared_ptr<const RealtimeStateSnapshot>> releasableSnapshots;
-        {
-            const juce::ScopedLock sl(retiredSnapshotLock);
-            if (retiredRealtimeSnapshots.empty())
-                return;
-
-            std::vector<std::shared_ptr<const RealtimeStateSnapshot>> survivors;
-            survivors.reserve(retiredRealtimeSnapshots.size());
-            releasableSnapshots.reserve(retiredRealtimeSnapshots.size());
-            for (auto& snapshot : retiredRealtimeSnapshots)
-            {
-                if (snapshot != nullptr && snapshot.use_count() > 1)
-                    survivors.push_back(std::move(snapshot));
-                else
-                    releasableSnapshots.push_back(std::move(snapshot));
-            }
-
-            retiredRealtimeSnapshots.swap(survivors);
-        }
-
-        // Release outside the lock so expensive teardown never blocks UI state updates.
-        for (auto& snapshot : releasableSnapshots)
-        {
-            snapshot.reset();
-        }
+        realtimeSnapshotState.drainRetiredSnapshots();
     }
 
     void MainComponent::setSelectedTrackIndex(int idx)

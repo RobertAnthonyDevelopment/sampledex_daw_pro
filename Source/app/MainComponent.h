@@ -21,6 +21,8 @@
 #include "StreamingClipSource.h"
 #include "ProjectSerializer.h"
 #include "RealtimeGraphScheduler.h"
+#include "RealtimeAudioEngine.h"
+#include "RealtimeStateSnapshot.h"
 #include "Theme.h"
 
 namespace sampledex { class LcdDisplay; } 
@@ -121,22 +123,6 @@ namespace sampledex
             int trackIndex = -1;
             bool isToggle = false;
             int lastValue = -1;
-        };
-
-        struct TempoEvent
-        {
-            double beat = 0.0;
-            double bpm = 120.0;
-        };
-
-        struct RealtimeStateSnapshot
-        {
-            std::vector<Clip> arrangement;
-            std::vector<Track*> trackPointers;
-            std::vector<TempoEvent> tempoEvents;
-            std::vector<AutomationLane> automationLanes;
-            int globalTransposeSemitones = 0;
-            std::vector<std::shared_ptr<StreamingClipSource>> audioClipStreams;
         };
 
         struct ExportSettings
@@ -240,7 +226,6 @@ namespace sampledex
         void resetStreamingStateForProjectSwitch();
         void rebuildRealtimeSnapshot(bool markDirty = true);
         std::shared_ptr<const RealtimeStateSnapshot> getRealtimeSnapshot() const;
-        void retireRealtimeSnapshot(std::shared_ptr<const RealtimeStateSnapshot> snapshot);
         void drainRetiredRealtimeSnapshots();
         void rebuildTempoEventMap();
         double getTempoAtBeat(double beat) const;
@@ -512,9 +497,7 @@ namespace sampledex
         std::atomic<bool> usingLikelyBuiltInAudioRt { false };
         std::atomic<bool> panicRequestedRt { false };
         std::atomic<bool> offlineRenderActiveRt { false };
-        std::shared_ptr<const RealtimeStateSnapshot> realtimeSnapshot;
-        std::vector<std::shared_ptr<const RealtimeStateSnapshot>> retiredRealtimeSnapshots;
-        juce::CriticalSection retiredSnapshotLock;
+        RealtimeSnapshotStateManager realtimeSnapshotState;
         
         juce::MidiMessageCollector midiCollector;
         TransportEngine transport;
