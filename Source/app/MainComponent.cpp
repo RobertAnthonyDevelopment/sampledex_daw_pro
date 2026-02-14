@@ -12239,7 +12239,8 @@ namespace sampledex
                                    + " --plugin-scan-pass"
                                    + " --known=" + knownPluginListFile.getFullPathName().quoted()
                                    + " --deadman=" + pluginScanDeadMansPedalFile.getFullPathName().quoted()
-                                   + " --plugin-scan-format=" + activeScanFormat.quoted();
+                                   + " --plugin-scan-format=" + activeScanFormat.quoted()
+                                   + " --plugin-scan-timeout-ms=" + juce::String(pluginScanPassTimeoutMs);
 
         pluginScanProcess = std::make_unique<juce::ChildProcess>();
         if (!pluginScanProcess->start(command))
