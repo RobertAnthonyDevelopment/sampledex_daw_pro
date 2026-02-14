@@ -149,10 +149,14 @@ namespace sampledex
             ccSelector.addItem("CC11 Expression", 4);
             ccSelector.addItem("CC64 Sustain", 5);
             ccSelector.addItem("CC74 Brightness", 6);
+            ccSelector.addItem("Pitch Bend", 7);
+            ccSelector.addItem("Channel Pressure", 8);
+            ccSelector.addItem("Poly Aftertouch", 9);
+            ccSelector.addItem("Program Change", 10);
             ccSelector.setSelectedId(1, juce::dontSendNotification);
             ccSelector.onChange = [this]
             {
-                ccLaneIndex = juce::jlimit(0, static_cast<int>(ccControllers.size()) - 1, ccSelector.getSelectedId() - 1);
+                ccLaneIndex = juce::jlimit(0, getTotalLaneCount() - 1, ccSelector.getSelectedId() - 1);
                 repaint();
             };
 
@@ -181,11 +185,31 @@ namespace sampledex
 
                                     for (auto& cc : target.ccEvents)
                                         cc.beat = juce::jlimit(0.0, target.lengthBeats, quantizeBeatToGrid(cc.beat));
+                                    for (auto& bend : target.pitchBendEvents)
+                                        bend.beat = juce::jlimit(0.0, target.lengthBeats, quantizeBeatToGrid(bend.beat));
+                                    for (auto& pressure : target.channelPressureEvents)
+                                        pressure.beat = juce::jlimit(0.0, target.lengthBeats, quantizeBeatToGrid(pressure.beat));
+                                    for (auto& poly : target.polyAftertouchEvents)
+                                        poly.beat = juce::jlimit(0.0, target.lengthBeats, quantizeBeatToGrid(poly.beat));
+                                    for (auto& program : target.programChangeEvents)
+                                        program.beat = juce::jlimit(0.0, target.lengthBeats, quantizeBeatToGrid(program.beat));
+                                    for (auto& raw : target.rawEvents)
+                                        raw.beat = juce::jlimit(0.0, target.lengthBeats, quantizeBeatToGrid(raw.beat));
 
                                     std::sort(target.events.begin(), target.events.end(),
                                               [](const TimelineEvent& a, const TimelineEvent& b) { return a.startBeat < b.startBeat; });
                                     std::sort(target.ccEvents.begin(), target.ccEvents.end(),
                                               [](const MidiCCEvent& a, const MidiCCEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.pitchBendEvents.begin(), target.pitchBendEvents.end(),
+                                              [](const MidiPitchBendEvent& a, const MidiPitchBendEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.channelPressureEvents.begin(), target.channelPressureEvents.end(),
+                                              [](const MidiChannelPressureEvent& a, const MidiChannelPressureEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.polyAftertouchEvents.begin(), target.polyAftertouchEvents.end(),
+                                              [](const MidiPolyAftertouchEvent& a, const MidiPolyAftertouchEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.programChangeEvents.begin(), target.programChangeEvents.end(),
+                                              [](const MidiProgramChangeEvent& a, const MidiProgramChangeEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.rawEvents.begin(), target.rawEvents.end(),
+                                              [](const MidiRawEvent& a, const MidiRawEvent& b) { return a.beat < b.beat; });
                                 });
             };
 
@@ -222,10 +246,46 @@ namespace sampledex
                                         cc.value = static_cast<uint8_t>(value);
                                     }
 
+                                    for (auto& bend : target.pitchBendEvents)
+                                    {
+                                        const double offset = random.nextDouble() * (2.0 * beatJitter) - beatJitter;
+                                        bend.beat = juce::jlimit(0.0, target.lengthBeats, bend.beat + offset);
+                                    }
+                                    for (auto& pressure : target.channelPressureEvents)
+                                    {
+                                        const double offset = random.nextDouble() * (2.0 * beatJitter) - beatJitter;
+                                        pressure.beat = juce::jlimit(0.0, target.lengthBeats, pressure.beat + offset);
+                                    }
+                                    for (auto& poly : target.polyAftertouchEvents)
+                                    {
+                                        const double offset = random.nextDouble() * (2.0 * beatJitter) - beatJitter;
+                                        poly.beat = juce::jlimit(0.0, target.lengthBeats, poly.beat + offset);
+                                    }
+                                    for (auto& program : target.programChangeEvents)
+                                    {
+                                        const double offset = random.nextDouble() * (2.0 * beatJitter) - beatJitter;
+                                        program.beat = juce::jlimit(0.0, target.lengthBeats, program.beat + offset);
+                                    }
+                                    for (auto& raw : target.rawEvents)
+                                    {
+                                        const double offset = random.nextDouble() * (2.0 * beatJitter) - beatJitter;
+                                        raw.beat = juce::jlimit(0.0, target.lengthBeats, raw.beat + offset);
+                                    }
+
                                     std::sort(target.events.begin(), target.events.end(),
                                               [](const TimelineEvent& a, const TimelineEvent& b) { return a.startBeat < b.startBeat; });
                                     std::sort(target.ccEvents.begin(), target.ccEvents.end(),
                                               [](const MidiCCEvent& a, const MidiCCEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.pitchBendEvents.begin(), target.pitchBendEvents.end(),
+                                              [](const MidiPitchBendEvent& a, const MidiPitchBendEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.channelPressureEvents.begin(), target.channelPressureEvents.end(),
+                                              [](const MidiChannelPressureEvent& a, const MidiChannelPressureEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.polyAftertouchEvents.begin(), target.polyAftertouchEvents.end(),
+                                              [](const MidiPolyAftertouchEvent& a, const MidiPolyAftertouchEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.programChangeEvents.begin(), target.programChangeEvents.end(),
+                                              [](const MidiProgramChangeEvent& a, const MidiProgramChangeEvent& b) { return a.beat < b.beat; });
+                                    std::sort(target.rawEvents.begin(), target.rawEvents.end(),
+                                              [](const MidiRawEvent& a, const MidiRawEvent& b) { return a.beat < b.beat; });
                                 });
             };
 
@@ -1214,20 +1274,71 @@ namespace sampledex
                 g.drawLine(x, static_cast<float>(ccGrid.getY()), x, static_cast<float>(ccGrid.getBottom()));
             }
 
-            const int controller = getSelectedController();
-            for (const auto& cc : clip->ccEvents)
+            if (isControllerLaneSelected())
             {
-                if (cc.controller != controller)
-                    continue;
-                if (cc.beat < viewStartBeat || cc.beat > viewEndBeat)
-                    continue;
-
-                const float x = ccGrid.getX() + static_cast<float>((cc.beat - viewStartBeat) * beatWidth);
-                const float valueNorm = static_cast<float>(cc.value) / 127.0f;
-                const float h = valueNorm * static_cast<float>(ccGrid.getHeight());
-                const float y = ccGrid.getBottom() - h;
-                g.setColour(theme::Colours::accent().withAlpha(0.78f));
-                g.fillRect(x - 2.0f, y, 4.0f, h);
+                const int controller = getSelectedController();
+                for (const auto& cc : clip->ccEvents)
+                {
+                    if (cc.controller != controller || cc.beat < viewStartBeat || cc.beat > viewEndBeat)
+                        continue;
+                    const float x = ccGrid.getX() + static_cast<float>((cc.beat - viewStartBeat) * beatWidth);
+                    const float valueNorm = static_cast<float>(cc.value) / 127.0f;
+                    const float h = valueNorm * static_cast<float>(ccGrid.getHeight());
+                    g.setColour(theme::Colours::accent().withAlpha(0.78f));
+                    g.fillRect(x - 2.0f, ccGrid.getBottom() - h, 4.0f, h);
+                }
+            }
+            else if (isPitchBendLaneSelected())
+            {
+                for (const auto& bend : clip->pitchBendEvents)
+                {
+                    if (bend.beat < viewStartBeat || bend.beat > viewEndBeat)
+                        continue;
+                    const float x = ccGrid.getX() + static_cast<float>((bend.beat - viewStartBeat) * beatWidth);
+                    const float valueNorm = static_cast<float>(juce::jlimit(0, 16383, bend.value)) / 16383.0f;
+                    const float h = valueNorm * static_cast<float>(ccGrid.getHeight());
+                    g.setColour(juce::Colours::orange.withAlpha(0.8f));
+                    g.fillRect(x - 2.0f, ccGrid.getBottom() - h, 4.0f, h);
+                }
+            }
+            else if (isChannelPressureLaneSelected())
+            {
+                for (const auto& pressure : clip->channelPressureEvents)
+                {
+                    if (pressure.beat < viewStartBeat || pressure.beat > viewEndBeat)
+                        continue;
+                    const float x = ccGrid.getX() + static_cast<float>((pressure.beat - viewStartBeat) * beatWidth);
+                    const float valueNorm = static_cast<float>(pressure.pressure) / 127.0f;
+                    const float h = valueNorm * static_cast<float>(ccGrid.getHeight());
+                    g.setColour(juce::Colours::cyan.withAlpha(0.75f));
+                    g.fillRect(x - 2.0f, ccGrid.getBottom() - h, 4.0f, h);
+                }
+            }
+            else if (isPolyAftertouchLaneSelected())
+            {
+                for (const auto& poly : clip->polyAftertouchEvents)
+                {
+                    if (poly.beat < viewStartBeat || poly.beat > viewEndBeat)
+                        continue;
+                    const float x = ccGrid.getX() + static_cast<float>((poly.beat - viewStartBeat) * beatWidth);
+                    const float valueNorm = static_cast<float>(poly.pressure) / 127.0f;
+                    const float h = valueNorm * static_cast<float>(ccGrid.getHeight());
+                    g.setColour(juce::Colours::violet.withAlpha(0.78f));
+                    g.fillRect(x - 2.0f, ccGrid.getBottom() - h, 4.0f, h);
+                }
+            }
+            else if (isProgramChangeLaneSelected())
+            {
+                for (const auto& program : clip->programChangeEvents)
+                {
+                    if (program.beat < viewStartBeat || program.beat > viewEndBeat || program.program < 0)
+                        continue;
+                    const float x = ccGrid.getX() + static_cast<float>((program.beat - viewStartBeat) * beatWidth);
+                    const float valueNorm = static_cast<float>(program.program) / 127.0f;
+                    const float h = valueNorm * static_cast<float>(ccGrid.getHeight());
+                    g.setColour(juce::Colours::yellow.withAlpha(0.8f));
+                    g.fillRect(x - 2.0f, ccGrid.getBottom() - h, 4.0f, h);
+                }
             }
 
             g.setColour(juce::Colours::white.withAlpha(0.25f));
@@ -1241,52 +1352,189 @@ namespace sampledex
             const double rawBeat = viewStartBeat + ((e.position.x - ccGrid.getX()) / beatWidth);
             const double beat = juce::jlimit(0.0, clip->lengthBeats, quantizeBeatToGrid(rawBeat));
             const float normalized = juce::jlimit(0.0f, 1.0f, (ccGrid.getBottom() - e.position.y) / static_cast<float>(ccGrid.getHeight()));
-            const uint8_t value = static_cast<uint8_t>(juce::jlimit(0, 127, static_cast<int>(std::round(normalized * 127.0f))));
-            const int controller = getSelectedController();
 
-            if (e.mods.isRightButtonDown())
+            if (isControllerLaneSelected())
             {
-                performClipEdit("Delete CC Event",
-                                [beat, controller, this](Clip& target)
-                                {
-                                    auto it = std::remove_if(target.ccEvents.begin(), target.ccEvents.end(),
-                                                             [&](const MidiCCEvent& cc)
-                                                             {
-                                                                 return cc.controller == controller
-                                                                     && std::abs(cc.beat - beat) <= (snapBeat * 0.5);
-                                                             });
-                                    target.ccEvents.erase(it, target.ccEvents.end());
-                                });
+                const uint8_t value = static_cast<uint8_t>(juce::jlimit(0, 127, static_cast<int>(std::round(normalized * 127.0f))));
+                const int controller = getSelectedController();
+                if (e.mods.isRightButtonDown())
+                {
+                    performClipEdit("Delete CC Event", [beat, controller, this](Clip& target)
+                    {
+                        auto it = std::remove_if(target.ccEvents.begin(), target.ccEvents.end(),
+                                                 [&](const MidiCCEvent& cc)
+                                                 {
+                                                     return cc.controller == controller
+                                                         && std::abs(cc.beat - beat) <= (snapBeat * 0.5);
+                                                 });
+                        target.ccEvents.erase(it, target.ccEvents.end());
+                    });
+                    return;
+                }
+
+                performClipEdit("Edit CC Lane", [beat, value, controller, this](Clip& target)
+                {
+                    bool updated = false;
+                    for (auto& cc : target.ccEvents)
+                    {
+                        if (cc.controller == controller && std::abs(cc.beat - beat) <= (snapBeat * 0.5))
+                        {
+                            cc.beat = beat;
+                            cc.value = value;
+                            updated = true;
+                            break;
+                        }
+                    }
+                    if (!updated)
+                        target.ccEvents.push_back({ beat, controller, value });
+                    std::sort(target.ccEvents.begin(), target.ccEvents.end(),
+                              [](const MidiCCEvent& a, const MidiCCEvent& b) { return a.beat < b.beat; });
+                });
                 return;
             }
 
-            performClipEdit("Edit CC Lane",
-                            [beat, value, controller, this](Clip& target)
+            if (isPitchBendLaneSelected())
+            {
+                const int value = juce::jlimit(0, 16383, static_cast<int>(std::round(normalized * 16383.0f)));
+                performClipEdit(e.mods.isRightButtonDown() ? "Delete Pitch Bend" : "Edit Pitch Bend", [beat, value, this, isDelete = e.mods.isRightButtonDown()](Clip& target)
+                {
+                    if (isDelete)
+                    {
+                        auto it = std::remove_if(target.pitchBendEvents.begin(), target.pitchBendEvents.end(),
+                                                 [&](const MidiPitchBendEvent& ev) { return std::abs(ev.beat - beat) <= (snapBeat * 0.5); });
+                        target.pitchBendEvents.erase(it, target.pitchBendEvents.end());
+                    }
+                    else
+                    {
+                        bool updated = false;
+                        for (auto& ev : target.pitchBendEvents)
+                        {
+                            if (std::abs(ev.beat - beat) <= (snapBeat * 0.5))
                             {
-                                bool updated = false;
-                                for (auto& cc : target.ccEvents)
-                                {
-                                    if (cc.controller == controller && std::abs(cc.beat - beat) <= (snapBeat * 0.5))
-                                    {
-                                        cc.beat = beat;
-                                        cc.value = value;
-                                        updated = true;
-                                        break;
-                                    }
-                                }
+                                ev.beat = beat;
+                                ev.value = value;
+                                updated = true;
+                                break;
+                            }
+                        }
+                        if (!updated)
+                            target.pitchBendEvents.push_back({ beat, value });
+                        std::sort(target.pitchBendEvents.begin(), target.pitchBendEvents.end(),
+                                  [](const MidiPitchBendEvent& a, const MidiPitchBendEvent& b) { return a.beat < b.beat; });
+                    }
+                });
+                return;
+            }
 
-                                if (!updated)
-                                {
-                                    MidiCCEvent cc;
-                                    cc.beat = beat;
-                                    cc.controller = controller;
-                                    cc.value = value;
-                                    target.ccEvents.push_back(cc);
-                                }
+            if (isChannelPressureLaneSelected())
+            {
+                const uint8_t value = static_cast<uint8_t>(juce::jlimit(0, 127, static_cast<int>(std::round(normalized * 127.0f))));
+                performClipEdit(e.mods.isRightButtonDown() ? "Delete Channel Pressure" : "Edit Channel Pressure", [beat, value, this, isDelete = e.mods.isRightButtonDown()](Clip& target)
+                {
+                    if (isDelete)
+                    {
+                        auto it = std::remove_if(target.channelPressureEvents.begin(), target.channelPressureEvents.end(),
+                                                 [&](const MidiChannelPressureEvent& ev) { return std::abs(ev.beat - beat) <= (snapBeat * 0.5); });
+                        target.channelPressureEvents.erase(it, target.channelPressureEvents.end());
+                    }
+                    else
+                    {
+                        bool updated = false;
+                        for (auto& ev : target.channelPressureEvents)
+                        {
+                            if (std::abs(ev.beat - beat) <= (snapBeat * 0.5))
+                            {
+                                ev.beat = beat;
+                                ev.pressure = value;
+                                updated = true;
+                                break;
+                            }
+                        }
+                        if (!updated)
+                            target.channelPressureEvents.push_back({ beat, value });
+                        std::sort(target.channelPressureEvents.begin(), target.channelPressureEvents.end(),
+                                  [](const MidiChannelPressureEvent& a, const MidiChannelPressureEvent& b) { return a.beat < b.beat; });
+                    }
+                });
+                return;
+            }
 
-                                std::sort(target.ccEvents.begin(), target.ccEvents.end(),
-                                          [](const MidiCCEvent& a, const MidiCCEvent& b) { return a.beat < b.beat; });
-                            });
+            if (isPolyAftertouchLaneSelected())
+            {
+                const uint8_t value = static_cast<uint8_t>(juce::jlimit(0, 127, static_cast<int>(std::round(normalized * 127.0f))));
+                const int note = (selectedNoteIndex >= 0 && selectedNoteIndex < static_cast<int>(clip->events.size()))
+                    ? clip->events[static_cast<size_t>(selectedNoteIndex)].noteNumber
+                    : 60;
+                performClipEdit(e.mods.isRightButtonDown() ? "Delete Poly Aftertouch" : "Edit Poly Aftertouch", [beat, value, note, this, isDelete = e.mods.isRightButtonDown()](Clip& target)
+                {
+                    if (isDelete)
+                    {
+                        auto it = std::remove_if(target.polyAftertouchEvents.begin(), target.polyAftertouchEvents.end(),
+                                                 [&](const MidiPolyAftertouchEvent& ev)
+                                                 {
+                                                     return std::abs(ev.beat - beat) <= (snapBeat * 0.5)
+                                                         && ev.noteNumber == note;
+                                                 });
+                        target.polyAftertouchEvents.erase(it, target.polyAftertouchEvents.end());
+                    }
+                    else
+                    {
+                        bool updated = false;
+                        for (auto& ev : target.polyAftertouchEvents)
+                        {
+                            if (ev.noteNumber == note && std::abs(ev.beat - beat) <= (snapBeat * 0.5))
+                            {
+                                ev.beat = beat;
+                                ev.pressure = value;
+                                updated = true;
+                                break;
+                            }
+                        }
+                        if (!updated)
+                            target.polyAftertouchEvents.push_back({ beat, note, value });
+                        std::sort(target.polyAftertouchEvents.begin(), target.polyAftertouchEvents.end(),
+                                  [](const MidiPolyAftertouchEvent& a, const MidiPolyAftertouchEvent& b) { return a.beat < b.beat; });
+                    }
+                });
+                return;
+            }
+
+            if (isProgramChangeLaneSelected())
+            {
+                const int value = juce::jlimit(0, 127, static_cast<int>(std::round(normalized * 127.0f)));
+                performClipEdit(e.mods.isRightButtonDown() ? "Delete Program Change" : "Edit Program Change", [beat, value, this, isDelete = e.mods.isRightButtonDown()](Clip& target)
+                {
+                    if (isDelete)
+                    {
+                        auto it = std::remove_if(target.programChangeEvents.begin(), target.programChangeEvents.end(),
+                                                 [&](const MidiProgramChangeEvent& ev) { return std::abs(ev.beat - beat) <= (snapBeat * 0.5); });
+                        target.programChangeEvents.erase(it, target.programChangeEvents.end());
+                    }
+                    else
+                    {
+                        bool updated = false;
+                        for (auto& ev : target.programChangeEvents)
+                        {
+                            if (std::abs(ev.beat - beat) <= (snapBeat * 0.5))
+                            {
+                                ev.beat = beat;
+                                ev.program = value;
+                                updated = true;
+                                break;
+                            }
+                        }
+                        if (!updated)
+                        {
+                            MidiProgramChangeEvent ev;
+                            ev.beat = beat;
+                            ev.program = value;
+                            target.programChangeEvents.push_back(ev);
+                        }
+                        std::sort(target.programChangeEvents.begin(), target.programChangeEvents.end(),
+                                  [](const MidiProgramChangeEvent& a, const MidiProgramChangeEvent& b) { return a.beat < b.beat; });
+                    }
+                });
+            }
         }
 
         void handleVelocityLaneMouseDown(const juce::MouseEvent& e, juce::Rectangle<int> velocityGrid)
@@ -2215,8 +2463,20 @@ namespace sampledex
 
         int getSelectedController() const
         {
-            return ccControllers[static_cast<size_t>(juce::jlimit(0, static_cast<int>(ccControllers.size()) - 1, ccLaneIndex))];
+            const int index = juce::jlimit(0, static_cast<int>(ccControllers.size()) - 1, ccLaneIndex);
+            return ccControllers[static_cast<size_t>(index)];
         }
+
+        int getTotalLaneCount() const
+        {
+            return static_cast<int>(ccControllers.size()) + 4;
+        }
+
+        bool isControllerLaneSelected() const { return ccLaneIndex < static_cast<int>(ccControllers.size()); }
+        bool isPitchBendLaneSelected() const { return ccLaneIndex == static_cast<int>(ccControllers.size()); }
+        bool isChannelPressureLaneSelected() const { return ccLaneIndex == static_cast<int>(ccControllers.size()) + 1; }
+        bool isPolyAftertouchLaneSelected() const { return ccLaneIndex == static_cast<int>(ccControllers.size()) + 2; }
+        bool isProgramChangeLaneSelected() const { return ccLaneIndex == static_cast<int>(ccControllers.size()) + 3; }
 
         bool isBlackKey(int note) const
         {
