@@ -4451,14 +4451,15 @@ namespace sampledex
         if (projectMutationSerial == lastAutosaveSerial)
             return;
 
-        juce::String error;
-        if (saveProjectStateToFile(autosaveProjectFile, error))
-        {
-            lastAutosaveSerial = projectMutationSerial;
-            return;
-        }
-
-        juce::Logger::writeToLog("Autosave failed: " + (error.isNotEmpty() ? error : juce::String("Unknown error")));
+        startAsyncProjectSave(autosaveProjectFile,
+                              false,
+                              false,
+                              [](bool succeeded, const juce::String& error)
+                              {
+                                  if (succeeded)
+                                      return;
+                                  juce::Logger::writeToLog("Autosave failed: " + (error.isNotEmpty() ? error : juce::String("Unknown error")));
+                              });
     }
 
     void MainComponent::maybePromptRecoveryLoad()
@@ -5346,22 +5347,7 @@ namespace sampledex
             juce::MenuBarModel::setMacMainMenu(nullptr);
         #endif
         stopTimer();
-        outputSafetyMuteBlocksRt.store(256, std::memory_order_relaxed);
-        transport.stop();
-        panicAllNotes();
-        renderCancelRequestedRt.store(true, std::memory_order_relaxed);
-        deviceManager.removeAudioCallback(this);
-        backgroundRenderPool.removeAllJobs(true, 15000);
-        backgroundRenderBusyRt.store(false, std::memory_order_relaxed);
-        realtimeGraphScheduler.setWorkerCount(0);
-        for (const auto& info : juce::MidiInput::getAvailableDevices())
-        {
-            if (deviceManager.isMidiInputDeviceEnabled(info.identifier))
-            {
-                deviceManager.removeMidiInputDeviceCallback(info.identifier, this);
-                deviceManager.setMidiInputDeviceEnabled(info.identifier, false);
-            }
-        }
+        stopAndJoinBackgroundThreads();
         midiRouter.setVirtualOutputEnabled(false, {});
         midiRouter.setOutputByIndex(-1);
         saveToolbarLayoutSettings();
@@ -5373,16 +5359,6 @@ namespace sampledex
         closePluginEditorWindow();
         closeEqWindow();
         closeChannelRackWindow();
-        {
-            const juce::ScopedLock audioLock(deviceManager.getAudioCallbackLock());
-            for (auto& take : audioTakeWriters)
-            {
-                take.writer.reset();
-                take.active = false;
-            }
-        }
-        audioRecordDiskThread.stopThread(1500);
-        streamingAudioReadThread.stopThread(1500);
         {
             const juce::ScopedLock sl(retiredSnapshotLock);
             retiredRealtimeSnapshots.clear();
@@ -12217,18 +12193,158 @@ namespace sampledex
         return true;
     }
 
+    bool MainComponent::startAsyncProjectSave(const juce::File& destination,
+                                              bool markProjectCleanOnSuccess,
+                                              bool clearRecoveryAutosaveOnSuccess,
+                                              SaveCompletion completion)
+    {
+        juce::File selectedFile = destination;
+        if (selectedFile == juce::File{})
+        {
+            if (completion)
+                completion(false, "No destination file selected.");
+            return false;
+        }
+
+        if (selectedFile.getFileExtension().isEmpty())
+            selectedFile = selectedFile.withFileExtension(".sampledex");
+
+        const juce::File parentDir = selectedFile.getParentDirectory();
+        if (parentDir == juce::File{})
+        {
+            if (completion)
+                completion(false, "Invalid save location:\n" + selectedFile.getFullPathName());
+            return false;
+        }
+
+        if (!parentDir.exists() && !parentDir.createDirectory())
+        {
+            if (completion)
+                completion(false, "Unable to create destination folder:\n" + parentDir.getFullPathName());
+            return false;
+        }
+
+        if (saveInProgress.exchange(true, std::memory_order_acq_rel))
+        {
+            if (completion)
+                completion(false, "A save operation is already in progress.");
+            return false;
+        }
+
+        auto state = std::make_shared<ProjectSerializer::ProjectState>(buildCurrentProjectState());
+        const auto mutationSerialAtSaveStart = projectMutationSerial;
+        auto errorMessage = std::make_shared<juce::String>();
+        auto saveSucceeded = std::make_shared<std::atomic<bool>>(false);
+        auto destinationFile = std::make_shared<juce::File>(selectedFile);
+
+        backgroundRenderPool.addJob(new LambdaRenderJob("Project Save",
+                                                         [safeThis = juce::Component::SafePointer<MainComponent>(this),
+                                                          completion,
+                                                          markProjectCleanOnSuccess,
+                                                          clearRecoveryAutosaveOnSuccess,
+                                                          mutationSerialAtSaveStart,
+                                                          state,
+                                                          errorMessage,
+                                                          saveSucceeded,
+                                                          destinationFile]
+                                                         {
+                                                             const bool succeeded = ProjectSerializer::saveProject(*destinationFile,
+                                                                                                                   *state,
+                                                                                                                   *errorMessage);
+                                                             saveSucceeded->store(succeeded, std::memory_order_release);
+
+                                                             juce::MessageManager::callAsync([safeThis,
+                                                                                              completion,
+                                                                                              markProjectCleanOnSuccess,
+                                                                                              clearRecoveryAutosaveOnSuccess,
+                                                                                              mutationSerialAtSaveStart,
+                                                                                              errorMessage,
+                                                                                              saveSucceeded,
+                                                                                              destinationFile]()
+                                                             {
+                                                                 if (safeThis == nullptr)
+                                                                     return;
+
+                                                                 safeThis->saveInProgress.store(false, std::memory_order_release);
+
+                                                                 const bool completed = saveSucceeded->load(std::memory_order_acquire);
+                                                                 if (completed)
+                                                                 {
+                                                                     safeThis->currentProjectFile = *destinationFile;
+                                                                     if (markProjectCleanOnSuccess)
+                                                                         safeThis->projectDirty = false;
+                                                                     safeThis->lastAutosaveSerial = mutationSerialAtSaveStart;
+                                                                     if (clearRecoveryAutosaveOnSuccess && safeThis->autosaveProjectFile != juce::File{})
+                                                                         safeThis->autosaveProjectFile.deleteFile();
+                                                                     safeThis->refreshStatusText();
+                                                                 }
+
+                                                                 if (completion)
+                                                                     completion(completed,
+                                                                                completed ? juce::String{}
+                                                                                          : (errorMessage->isNotEmpty() ? *errorMessage
+                                                                                                                        : juce::String("Project save failed.")));
+                                                             });
+                                                         }),
+                                    true);
+
+        return true;
+    }
+
+    void MainComponent::stopAndJoinBackgroundThreads()
+    {
+        if (shutdownThreadsStopped.exchange(true, std::memory_order_acq_rel))
+            return;
+
+        outputSafetyMuteBlocksRt.store(256, std::memory_order_relaxed);
+        transport.stop();
+        panicAllNotes();
+        renderCancelRequestedRt.store(true, std::memory_order_relaxed);
+
+        deviceManager.removeAudioCallback(this);
+        audioRecordDiskThread.stopThread(2000);
+        streamingAudioReadThread.stopThread(2000);
+
+        backgroundRenderPool.removeAllJobs(true, 15000);
+        backgroundRenderBusyRt.store(false, std::memory_order_relaxed);
+        realtimeGraphScheduler.setWorkerCount(0);
+
+        for (const auto& info : juce::MidiInput::getAvailableDevices())
+        {
+            if (deviceManager.isMidiInputDeviceEnabled(info.identifier))
+            {
+                deviceManager.removeMidiInputDeviceCallback(info.identifier, this);
+                deviceManager.setMidiInputDeviceEnabled(info.identifier, false);
+            }
+        }
+
+        {
+            const juce::ScopedLock audioLock(deviceManager.getAudioCallbackLock());
+            for (auto& take : audioTakeWriters)
+            {
+                take.writer.reset();
+                take.active = false;
+            }
+        }
+    }
+
     void MainComponent::saveProject()
     {
         if (currentProjectFile != juce::File{})
         {
-            juce::String error;
-            if (saveProjectToFile(currentProjectFile, error))
-                return;
+            startAsyncProjectSave(currentProjectFile,
+                                  true,
+                                  true,
+                                  [this](bool succeeded, const juce::String& error)
+                                  {
+                                      if (succeeded)
+                                          return;
 
-            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                                   "Save Project",
-                                                   error.isNotEmpty() ? error
-                                                                      : juce::String("Project save failed."));
+                                      juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                                             "Save Project",
+                                                                             error.isNotEmpty() ? error
+                                                                                                : juce::String("Project save failed."));
+                                  });
             return;
         }
 
@@ -12262,14 +12378,19 @@ namespace sampledex
                                             if (selectedFile == juce::File{})
                                                 return;
 
-                                            juce::String error;
-                                            if (!saveProjectToFile(selectedFile, error))
-                                            {
-                                                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                                                                       "Save Project",
-                                                                                       error.isNotEmpty() ? error
-                                                                                                          : juce::String("Project save failed."));
-                                            }
+                                            startAsyncProjectSave(selectedFile,
+                                                                  true,
+                                                                  true,
+                                                                  [](bool succeeded, const juce::String& error)
+                                                                  {
+                                                                      if (succeeded)
+                                                                          return;
+
+                                                                      juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                                                                             "Save Project",
+                                                                                                             error.isNotEmpty() ? error
+                                                                                                                                : juce::String("Project save failed."));
+                                                                  });
                                         });
     }
 
@@ -12350,6 +12471,7 @@ namespace sampledex
             // mark the project clean so the second pass can terminate immediately
             // instead of repeatedly prompting with the unsaved-changes dialog.
             projectDirty = false;
+            stopAndJoinBackgroundThreads();
             clearCloseRequest();
             if (auto* app = juce::JUCEApplication::getInstance())
                 app->quit();
@@ -12390,19 +12512,25 @@ namespace sampledex
 
         if (currentProjectFile != juce::File{})
         {
-            juce::String error;
-            if (!saveProjectToFile(currentProjectFile, error))
-            {
-                logCloseDecision("save-failed");
-                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                                       "Save Project",
-                                                       error.isNotEmpty() ? error
-                                                                          : juce::String("Project save failed."));
-                cancelClose("save-failed");
-                return;
-            }
-            logCloseDecision("save-success");
-            quitNow();
+            startAsyncProjectSave(currentProjectFile,
+                                  true,
+                                  true,
+                                  [this, cancelClose, quitNow](bool succeeded, const juce::String& error)
+                                  {
+                                      if (!succeeded)
+                                      {
+                                          logCloseDecision("save-failed");
+                                          juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                                                 "Save Project",
+                                                                                 error.isNotEmpty() ? error
+                                                                                                    : juce::String("Project save failed."));
+                                          cancelClose("save-failed");
+                                          return;
+                                      }
+
+                                      logCloseDecision("save-success");
+                                      quitNow();
+                                  });
             return;
         }
 
@@ -12432,19 +12560,24 @@ namespace sampledex
                                                 return;
                                             }
 
-                                            juce::String error;
-                                            if (!saveProjectToFile(selectedFile, error))
-                                            {
-                                                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                                                                       "Save Project",
-                                                                                       error.isNotEmpty() ? error
-                                                                                                          : juce::String("Project save failed."));
-                                                cancelClose("save-as-failed");
-                                                return;
-                                            }
+                                            startAsyncProjectSave(selectedFile,
+                                                                  true,
+                                                                  true,
+                                                                  [this, cancelClose, quitNow](bool succeeded, const juce::String& error)
+                                                                  {
+                                                                      if (!succeeded)
+                                                                      {
+                                                                          juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                                                                                 "Save Project",
+                                                                                                                 error.isNotEmpty() ? error
+                                                                                                                                    : juce::String("Project save failed."));
+                                                                          cancelClose("save-as-failed");
+                                                                          return;
+                                                                      }
 
-                                            logCloseDecision("save-as-success");
-                                            quitNow();
+                                                                      logCloseDecision("save-as-success");
+                                                                      quitNow();
+                                                                  });
                                         });
     }
 
