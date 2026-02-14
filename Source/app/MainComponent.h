@@ -445,6 +445,7 @@ namespace sampledex
         std::atomic<float> masterOutputGainRt { 0.9f };
         std::atomic<bool> masterSoftClipEnabledRt { true };
         std::atomic<bool> masterLimiterEnabledRt { true };
+        std::atomic<bool> outputDcHighPassEnabledRt { true };
         std::atomic<float> auxReturnGainRt { 0.5f };
         std::atomic<bool> auxFxEnabledRt { true };
         std::atomic<float> auxMeterRt { 0.0f };
@@ -494,6 +495,7 @@ namespace sampledex
         float masterOutputGain = 0.9f;
         bool masterSoftClipEnabled = true;
         bool masterLimiterEnabled = true;
+        bool outputDcHighPassEnabled = true;
         float auxReturnGain = 0.5f;
         bool auxFxEnabled = true;
 
@@ -690,9 +692,11 @@ namespace sampledex
         std::map<juce::String, std::shared_ptr<StreamingClipSource>> streamingClipCache;
         std::array<AudioTakeWriterState, static_cast<size_t>(maxRealtimeTracks)> audioTakeWriters;
         float masterGainSmoothingState = 0.9f;
+        float masterGainDezipperCoeff = 0.0f;
         std::array<float, 2> outputDcPrevInput { 0.0f, 0.0f };
         std::array<float, 2> outputDcPrevOutput { 0.0f, 0.0f };
         std::array<float, 2> masterLimiterPrevInput { 0.0f, 0.0f };
+        std::array<float, 2> masterTruePeakMidpointPrevInput { 0.0f, 0.0f };
         float masterLimiterGainState = 1.0f;
         bool wasTransportPlayingLastBlock = false;
         std::array<juce::AudioBuffer<float>, static_cast<size_t>(maxRealtimeTracks)> trackMainWorkBuffers;
