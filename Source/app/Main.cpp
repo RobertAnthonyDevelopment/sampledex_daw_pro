@@ -4,6 +4,8 @@
 #include <iostream>
 #include <memory>
 #include <cmath>
+#include <cctype>
+
 
 namespace
 {
@@ -106,6 +108,101 @@ namespace
         return trimmed.getIntValue();
     }
 
+    static juce::String fourCCFromInt(int value)
+    {
+        juce::String code;
+        for (int shift = 24; shift >= 0; shift -= 8)
+        {
+            const auto c = static_cast<char>((static_cast<unsigned int>(value) >> static_cast<unsigned int>(shift)) & 0xffu);
+            if (!std::isalnum(static_cast<unsigned char>(c)))
+                return {};
+            code << juce::String::charToString(static_cast<juce::juce_wchar>(c));
+        }
+        return code;
+    }
+
+#if JUCE_MAC
+    static bool runAuValidationIfPossible(const juce::String& formatName,
+                                          const juce::String& pluginIdentifier,
+                                          const juce::String& manufacturer,
+                                          int uniqueId,
+                                          int deprecatedUid,
+                                          bool instrumentPlugin,
+                                          juce::String& outError)
+    {
+        outError.clear();
+        if (!formatNameLooksLikeAudioUnit(formatName))
+            return true;
+
+        const juce::File auvalTool("/usr/bin/auval");
+        if (!auvalTool.existsAsFile())
+            return true;
+
+        juce::String componentType = instrumentPlugin ? "aumu" : "aufx";
+        juce::String componentSubType;
+        juce::String componentManufacturer;
+
+        juce::StringArray tokens;
+        tokens.addTokens(pluginIdentifier, ":/|,; ", {});
+        tokens.removeEmptyStrings();
+        tokens.trim();
+        for (const auto& token : tokens)
+        {
+            if (token.length() != 4)
+                continue;
+            if (!token.containsOnly("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
+                continue;
+
+            if (componentType.isEmpty())
+                componentType = token;
+            else if (componentSubType.isEmpty())
+                componentSubType = token;
+            else if (componentManufacturer.isEmpty())
+                componentManufacturer = token;
+        }
+
+        if (componentSubType.isEmpty())
+            componentSubType = fourCCFromInt(uniqueId);
+        if (componentSubType.isEmpty())
+            componentSubType = fourCCFromInt(deprecatedUid);
+
+        if (componentManufacturer.isEmpty())
+        {
+            auto mfrCode = manufacturer.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+            mfrCode = mfrCode.substring(0, 4).paddedRight(' ', 4).substring(0, 4);
+            if (mfrCode.length() == 4)
+                componentManufacturer = mfrCode;
+        }
+
+        if (componentSubType.length() != 4 || componentManufacturer.length() != 4)
+            return true;
+
+        const juce::String command = auvalTool.getFullPathName().quoted()
+                                   + " -v " + componentType.quoted()
+                                   + " " + componentSubType.quoted()
+                                   + " " + componentManufacturer.quoted();
+
+        juce::ChildProcess process;
+        if (!process.start(command) || !process.waitForProcessToFinish(15000))
+        {
+            process.kill();
+            outError = "Audio Unit validation timed out.";
+            return false;
+        }
+
+        const auto exitCode = process.getExitCode();
+        const auto output = process.readAllProcessOutput();
+        if (exitCode != 0)
+        {
+            outError = "Audio Unit validation failed."
+                     + (output.isNotEmpty() ? ("\n" + output.trim()) : juce::String());
+            return false;
+        }
+
+        return true;
+    }
+#endif
+
     static juce::String getCommandArgValue(const juce::StringArray& tokens, const juce::String& key)
     {
         const auto keyWithEquals = key + "=";
@@ -149,6 +246,21 @@ namespace
         desc.manufacturerName = manufacturer;
         desc.uniqueId = parsePluginUidArg(uniqueIdArg);
         desc.deprecatedUid = parsePluginUidArg(deprecatedUidArg);
+
+#if JUCE_MAC
+        juce::String auValidationError;
+        if (!runAuValidationIfPossible(formatName,
+                                       pluginIdentifier,
+                                       manufacturer,
+                                       desc.uniqueId,
+                                       desc.deprecatedUid,
+                                       instrumentPlugin,
+                                       auValidationError))
+        {
+            std::cout << "ERROR: " << auValidationError << "\n";
+            return 2;
+        }
+#endif
         desc.isInstrument = instrumentPlugin;
 
         juce::AudioPluginFormatManager formatManager;
