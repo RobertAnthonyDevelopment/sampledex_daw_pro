@@ -584,9 +584,9 @@ namespace sampledex
             {
                 juce::ScopedLock sl(processLock);
                 sampleRateToUse = preparedSampleRate > 0.0 ? preparedSampleRate
-                                  : (getSampleRate() > 0.0 ? getSampleRate() : 44100.0);
+                                  : (this->getSampleRate() > 0.0 ? this->getSampleRate() : 44100.0);
                 blockSizeToUse = preparedBlockSize > 0 ? preparedBlockSize
-                                 : (getBlockSize() > 0 ? getBlockSize() : 512);
+                                 : (this->getBlockSize() > 0 ? this->getBlockSize() : 512);
                 playHeadToUse = transportPlayHead;
             }
 
@@ -661,9 +661,9 @@ namespace sampledex
             {
                 juce::ScopedLock sl(processLock);
                 sampleRateToUse = preparedSampleRate > 0.0 ? preparedSampleRate
-                                  : (getSampleRate() > 0.0 ? getSampleRate() : 44100.0);
+                                  : (this->getSampleRate() > 0.0 ? this->getSampleRate() : 44100.0);
                 blockSizeToUse = preparedBlockSize > 0 ? preparedBlockSize
-                                 : (getBlockSize() > 0 ? getBlockSize() : 512);
+                                 : (this->getBlockSize() > 0 ? this->getBlockSize() : 512);
                 playHeadToUse = transportPlayHead;
             }
 
@@ -2423,7 +2423,7 @@ namespace sampledex
                 return;
 
             const double sr = preparedSampleRate > 1.0 ? preparedSampleRate
-                                                       : (getSampleRate() > 1.0 ? getSampleRate() : 44100.0);
+                                                       : (this->getSampleRate() > 1.0 ? this->getSampleRate() : 44100.0);
             const double safeSr = juce::jmax(8000.0, sr);
             const double lowGain = juce::Decibels::decibelsToGain(low);
             const double midGain = juce::Decibels::decibelsToGain(mid);
@@ -2527,6 +2527,7 @@ namespace sampledex
         float prevLeftGain = 0.8f;
         float prevRightGain = 0.8f;
         float prevVolumeGain = 0.8f;
+        float prevSendGain = 0.0f;
         int startupRampSamplesRemaining = 0;
         float startupRampGain = 0.0f;
         std::array<float, 2> monitorDcPrevInput { 0.0f, 0.0f };
@@ -2534,7 +2535,6 @@ namespace sampledex
         double preparedSampleRate = 44100.0;
         int preparedBlockSize = 512;
         int startupRampDurationSamples = 1;
-        int startupRampSamplesRemaining = 0;
         juce::AudioBuffer<float> pluginProcessBuffer;
         juce::AudioBuffer<float> sendTapBuffer;
         juce::AudioBuffer<float> lastSuccessfulOutputBuffer;
