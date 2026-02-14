@@ -96,6 +96,10 @@ target_sources(SampledexChordLab PRIVATE
     Source/project/ProjectSerializer.h
     Source/engine/ScheduledMidiOutput.h
     Source/engine/RealtimeGraphScheduler.h
+    Source/engine/RealtimeAudioEngine.h
+    Source/engine/RealtimeAudioEngine.cpp
+    Source/engine/RealtimeStateSnapshot.h
+    Source/engine/RealtimeStateSnapshot.cpp
     Source/audio/StreamingClipSource.h
     Source/audio/StreamingClipSource.cpp
     
