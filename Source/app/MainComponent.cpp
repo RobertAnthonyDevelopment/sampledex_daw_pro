@@ -12253,6 +12253,10 @@ namespace sampledex
         const auto quitNow = [this, clearCloseRequest]
         {
             logCloseDecision("quit");
+            // If the platform routes quit() back through systemRequestedQuit(),
+            // mark the project clean so the second pass can terminate immediately
+            // instead of repeatedly prompting with the unsaved-changes dialog.
+            projectDirty = false;
             clearCloseRequest();
             if (auto* app = juce::JUCEApplication::getInstance())
                 app->quit();
