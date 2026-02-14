@@ -3059,7 +3059,6 @@ namespace sampledex
         addAndMakeVisible(browserPanel);
         addAndMakeVisible(trackListView);
         addAndMakeVisible(timelineView);
-        timeline.setTooltip(buildPrimaryShortcutMapText());
         addAndMakeVisible(mixerView);
         
         playButton.setButtonText("▶ Play");
