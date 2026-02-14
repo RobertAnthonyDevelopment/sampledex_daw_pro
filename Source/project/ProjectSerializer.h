@@ -194,6 +194,8 @@ namespace sampledex
                 cXml->setAttribute("gain", clip.gainLinear);
                 cXml->setAttribute("fadeIn", clip.fadeInBeats);
                 cXml->setAttribute("fadeOut", clip.fadeOutBeats);
+                cXml->setAttribute("crossfadeIn", clip.crossfadeInBeats);
+                cXml->setAttribute("crossfadeOut", clip.crossfadeOutBeats);
                 cXml->setAttribute("audioSampleRate", clip.audioSampleRate);
                 cXml->setAttribute("detectedTempoBpm", clip.detectedTempoBpm);
 
@@ -429,6 +431,8 @@ namespace sampledex
                     clip.gainLinear = static_cast<float>(cXml->getDoubleAttribute("gain", 1.0));
                     clip.fadeInBeats = juce::jmax(0.0, cXml->getDoubleAttribute("fadeIn", 0.0));
                     clip.fadeOutBeats = juce::jmax(0.0, cXml->getDoubleAttribute("fadeOut", 0.0));
+                    clip.crossfadeInBeats = juce::jmax(0.0, cXml->getDoubleAttribute("crossfadeIn", 0.0));
+                    clip.crossfadeOutBeats = juce::jmax(0.0, cXml->getDoubleAttribute("crossfadeOut", 0.0));
                     clip.audioSampleRate = juce::jmax(1.0, cXml->getDoubleAttribute("audioSampleRate", 44100.0));
                     clip.detectedTempoBpm = juce::jmax(0.0, cXml->getDoubleAttribute("detectedTempoBpm", 0.0));
 

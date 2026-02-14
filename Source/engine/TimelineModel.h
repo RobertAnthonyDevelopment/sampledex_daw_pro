@@ -102,6 +102,8 @@ namespace sampledex
         float gainLinear = 1.0f;
         double fadeInBeats = 0.0;
         double fadeOutBeats = 0.0;
+        double crossfadeInBeats = 0.0;
+        double crossfadeOutBeats = 0.0;
         double detectedTempoBpm = 0.0;
 
         bool operator==(const Clip& other) const
@@ -120,6 +122,8 @@ namespace sampledex
                             gainLinear,
                             fadeInBeats,
                             fadeOutBeats,
+                            crossfadeInBeats,
+                            crossfadeOutBeats,
                             detectedTempoBpm)
                 == std::tie(other.name,
                             other.type,
@@ -135,6 +139,8 @@ namespace sampledex
                             other.gainLinear,
                             other.fadeInBeats,
                             other.fadeOutBeats,
+                            other.crossfadeInBeats,
+                            other.crossfadeOutBeats,
                             other.detectedTempoBpm);
         }
 
@@ -198,5 +204,92 @@ namespace sampledex
             }
         }
     };
+
+    namespace ArrangementEditing
+    {
+        inline bool splitClipAtBeat(Clip& left, Clip& rightOut, double splitBeat)
+        {
+            const double splitLocalBeat = splitBeat - left.startBeat;
+            if (splitLocalBeat <= 0.0001 || splitLocalBeat >= left.lengthBeats - 0.0001)
+                return false;
+
+            rightOut = left;
+            rightOut.startBeat = splitBeat;
+            rightOut.lengthBeats = left.lengthBeats - splitLocalBeat;
+            left.lengthBeats = splitLocalBeat;
+
+            if (left.type != ClipType::MIDI)
+                return true;
+
+            std::vector<TimelineEvent> leftEvents;
+            std::vector<TimelineEvent> rightEvents;
+            leftEvents.reserve(left.events.size());
+            rightEvents.reserve(left.events.size());
+
+            for (const auto& ev : left.events)
+            {
+                const double evStart = ev.startBeat;
+                const double evEnd = ev.startBeat + ev.durationBeats;
+
+                if (evStart < splitLocalBeat)
+                {
+                    TimelineEvent clippedLeft = ev;
+                    clippedLeft.durationBeats = juce::jmax(0.001, juce::jmin(ev.durationBeats, splitLocalBeat - evStart));
+                    leftEvents.push_back(clippedLeft);
+
+                    if (evEnd > splitLocalBeat)
+                    {
+                        TimelineEvent rightCarry = ev;
+                        rightCarry.startBeat = 0.0;
+                        rightCarry.durationBeats = juce::jmax(0.001, evEnd - splitLocalBeat);
+                        rightEvents.push_back(rightCarry);
+                    }
+                }
+                else
+                {
+                    TimelineEvent shifted = ev;
+                    shifted.startBeat = juce::jmax(0.0, ev.startBeat - splitLocalBeat);
+                    rightEvents.push_back(shifted);
+                }
+            }
+
+            std::vector<MidiCCEvent> leftCC;
+            std::vector<MidiCCEvent> rightCC;
+            leftCC.reserve(left.ccEvents.size());
+            rightCC.reserve(left.ccEvents.size());
+            for (const auto& cc : left.ccEvents)
+            {
+                if (cc.beat < splitLocalBeat)
+                    leftCC.push_back(cc);
+                else
+                {
+                    MidiCCEvent shifted = cc;
+                    shifted.beat = juce::jmax(0.0, shifted.beat - splitLocalBeat);
+                    rightCC.push_back(shifted);
+                }
+            }
+
+            left.events = std::move(leftEvents);
+            left.ccEvents = std::move(leftCC);
+            rightOut.events = std::move(rightEvents);
+            rightOut.ccEvents = std::move(rightCC);
+            return true;
+        }
+
+        inline void applySymmetricCrossfade(Clip& left, Clip& right, double fadeBeats)
+        {
+            if (left.trackIndex != right.trackIndex)
+                return;
+
+            const double clamped = juce::jmax(0.0, fadeBeats);
+            const double maxByLeft = juce::jmax(0.0, left.lengthBeats * 0.49);
+            const double maxByRight = juce::jmax(0.0, right.lengthBeats * 0.49);
+            const double applied = juce::jmin(clamped, juce::jmin(maxByLeft, maxByRight));
+            left.crossfadeOutBeats = applied;
+            right.crossfadeInBeats = applied;
+            left.fadeOutBeats = juce::jmax(left.fadeOutBeats, applied);
+            right.fadeInBeats = juce::jmax(right.fadeInBeats, applied);
+        }
+    }
 
 }
