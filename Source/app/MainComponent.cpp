@@ -185,6 +185,12 @@ namespace
         return inSample * fade;
     }
 
+    static inline float applyEqualPowerFade(float linearFade) noexcept
+    {
+        const float clamped = juce::jlimit(0.0f, 1.0f, linearFade);
+        return std::sin(clamped * static_cast<float>(juce::MathConstants<double>::halfPi));
+    }
+
     static inline float processSoftClipOversampled2x(float sample,
                                                      float drive,
                                                      float normaliser,
@@ -6798,11 +6804,19 @@ namespace sampledex
                             break;
                         float fadeGain = 1.0f;
                         if (fadeInBeats > 0.0)
-                            fadeGain = juce::jmin(fadeGain, static_cast<float>(juce::jlimit(0.0, 1.0, beatInClip / fadeInBeats)));
+                        {
+                            const float fadeInLinear = static_cast<float>(juce::jlimit(0.0,
+                                                                                       1.0,
+                                                                                       beatInClip / fadeInBeats));
+                            fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeInLinear));
+                        }
                         if (fadeOutBeats > 0.0)
                         {
                             const double beatsToEnd = juce::jmax(0.0, clip.lengthBeats - beatInClip);
-                            fadeGain = juce::jmin(fadeGain, static_cast<float>(juce::jlimit(0.0, 1.0, beatsToEnd / fadeOutBeats)));
+                            const float fadeOutLinear = static_cast<float>(juce::jlimit(0.0,
+                                                                                         1.0,
+                                                                                         beatsToEnd / fadeOutBeats));
+                            fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeOutLinear));
                         }
                         const float sampleGain = baseGain * fadeGain;
                         const double beatsPerSample = beatStep;
@@ -7329,8 +7343,10 @@ namespace sampledex
         constexpr float softClipDrive = 1.34f;
         const float softClipNormaliser = std::tanh(softClipDrive);
         constexpr float limiterCeiling = 0.972f;
-        constexpr float limiterAttack = 0.45f;
-        constexpr float limiterRelease = 0.0015f;
+        const double sampleRate = juce::jmax(1.0, sampleRateRt.load(std::memory_order_relaxed));
+        const float limiterAttack = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.0015)));
+        const float limiterRelease = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.045)));
+        const float limiterRecovery = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.030)));
         const float dezipperCoeff = masterGainDezipperCoeff > 0.0f
             ? masterGainDezipperCoeff
             : 0.0015f;
@@ -7369,7 +7385,7 @@ namespace sampledex
             }
             else
             {
-                masterLimiterGainState += (1.0f - masterLimiterGainState) * 0.01f;
+                masterLimiterGainState += (1.0f - masterLimiterGainState) * limiterRecovery;
             }
 
             for (int ch = 0; ch < outputChannels; ++ch)
