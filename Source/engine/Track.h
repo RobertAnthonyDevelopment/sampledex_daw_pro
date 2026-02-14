@@ -1196,6 +1196,9 @@ namespace sampledex
             builtInGateEnvelope = 0.0f;
             builtInDelayWritePosition = 0;
             builtInDelayLastSampleRate = juce::jmax(1.0, sampleRate);
+            startupRampSamplesRemaining = juce::jlimit(0,
+                                                       8192,
+                                                       static_cast<int>(std::round(juce::jmax(1.0, sampleRate) * 0.02)));
             prepareBuiltInEffectsLocked(sampleRate, samplesPerBlock);
 
             if (instrumentSlot.instance)
@@ -1243,6 +1246,9 @@ namespace sampledex
 
             const int requiredChannels = getRequiredPluginChannelsLocked(2);
             ensurePluginProcessBufferCapacityLocked(requiredChannels, juce::jmax(8192, samplesPerBlock));
+            pluginProcessBuffer.clear();
+            sendTapBuffer.clear();
+            lastSuccessfulOutputBuffer.clear();
         }
 
         void releaseResources() override
@@ -1786,6 +1792,8 @@ namespace sampledex
                 copyToSendBus(mainBuffer);
             }
 
+            applyStartupRampLocked(mainBuffer);
+
             storePostFaderPeak(mainBuffer);
 
             // 9. Metering (post-fader/post-pan for real mixer feedback).
@@ -1965,6 +1973,21 @@ namespace sampledex
             builtInDelayFeedbackLowpassState = { 0.0f, 0.0f };
             builtInDelayFeedbackDcBlockPrevInput = { 0.0f, 0.0f };
             builtInDelayFeedbackDcBlockPrevOutput = { 0.0f, 0.0f };
+            builtInGateEnvelope = 0.0f;
+            builtInSaturationSmoothedDrive = targetDriveForReset();
+            builtInSaturationSmoothedMix = targetMixForReset();
+            builtInSaturationDcPrevInput = { 0.0f, 0.0f };
+            builtInSaturationDcPrevOutput = { 0.0f, 0.0f };
+        }
+
+        float targetDriveForReset() const
+        {
+            return juce::jlimit(1.0f, 8.0f, builtInSaturationDrive.load(std::memory_order_relaxed));
+        }
+
+        float targetMixForReset() const
+        {
+            return juce::jlimit(0.0f, 1.0f, builtInSaturationMix.load(std::memory_order_relaxed));
         }
 
         void applyBuiltInGateLocked(juce::AudioBuffer<float>& buffer, int channels, int samples)
@@ -2005,25 +2028,53 @@ namespace sampledex
 
         void applyBuiltInSaturationLocked(juce::AudioBuffer<float>& buffer, int channels, int samples)
         {
-            const float drive = juce::jlimit(1.0f, 8.0f, builtInSaturationDrive.load(std::memory_order_relaxed));
-            const float mix = juce::jlimit(0.0f, 1.0f, builtInSaturationMix.load(std::memory_order_relaxed));
-            if (mix <= 0.0001f)
+            if (samples <= 0 || channels <= 0)
                 return;
 
-            const float normalise = 1.0f / std::tanh(drive);
+            const float targetDrive = juce::jlimit(1.0f, 8.0f, builtInSaturationDrive.load(std::memory_order_relaxed));
+            const float targetMix = juce::jlimit(0.0f, 1.0f, builtInSaturationMix.load(std::memory_order_relaxed));
+            if (targetMix <= 0.0001f && builtInSaturationSmoothedMix <= 0.0001f)
+                return;
+
+            float smoothedDrive = builtInSaturationSmoothedDrive;
+            float smoothedMix = builtInSaturationSmoothedMix;
+            const float driveStep = (targetDrive - smoothedDrive) / static_cast<float>(samples);
+            const float mixStep = (targetMix - smoothedMix) / static_cast<float>(samples);
+            constexpr float dcReject = 0.995f;
+
             for (int ch = 0; ch < channels; ++ch)
             {
                 auto* write = buffer.getWritePointer(ch);
                 if (write == nullptr)
                     continue;
 
+                float prevInput = builtInSaturationDcPrevInput[static_cast<size_t>(ch)];
+                float prevOutput = builtInSaturationDcPrevOutput[static_cast<size_t>(ch)];
+                float channelDrive = smoothedDrive;
+                float channelMix = smoothedMix;
+
                 for (int i = 0; i < samples; ++i)
                 {
+                    channelDrive += driveStep;
+                    channelMix += mixStep;
+
                     const float dry = write[i];
-                    const float wet = std::tanh(dry * drive) * normalise;
-                    write[i] = dry + ((wet - dry) * mix);
+                    const float dcRemoved = dry - prevInput + (dcReject * prevOutput);
+                    prevInput = dry;
+                    prevOutput = dcRemoved;
+
+                    const float safeDrive = juce::jmax(1.0e-4f, channelDrive);
+                    const float normalise = 1.0f / std::tanh(safeDrive);
+                    const float wet = std::tanh(dcRemoved * safeDrive) * normalise;
+                    write[i] = dry + ((wet - dry) * juce::jlimit(0.0f, 1.0f, channelMix));
                 }
+
+                builtInSaturationDcPrevInput[static_cast<size_t>(ch)] = prevInput;
+                builtInSaturationDcPrevOutput[static_cast<size_t>(ch)] = prevOutput;
             }
+
+            builtInSaturationSmoothedDrive = targetDrive;
+            builtInSaturationSmoothedMix = targetMix;
         }
 
         void applyBuiltInDelayLocked(juce::AudioBuffer<float>& buffer, int channels, int samples)
@@ -2347,6 +2398,32 @@ namespace sampledex
             cachedEqHighGainDb = high;
         }
 
+        void applyStartupRampLocked(juce::AudioBuffer<float>& target)
+        {
+            if (startupRampSamplesRemaining <= 0)
+                return;
+
+            const int sampleCount = target.getNumSamples();
+            if (sampleCount <= 0 || target.getNumChannels() <= 0)
+                return;
+
+            const int rampSamples = juce::jmin(sampleCount, startupRampSamplesRemaining);
+            const float startGain = startupRampGain;
+            const float progress = static_cast<float>(rampSamples)
+                                 / static_cast<float>(juce::jmax(1, startupRampSamplesRemaining));
+            const float endGain = startGain + ((1.0f - startGain) * progress);
+
+            for (int ch = 0; ch < target.getNumChannels(); ++ch)
+            {
+                target.applyGainRamp(ch, 0, rampSamples, startGain, 1.0f);
+                if (rampSamples < sampleCount)
+                    target.applyGain(ch, rampSamples, sampleCount - rampSamples, 1.0f);
+            }
+
+            startupRampSamplesRemaining -= rampSamples;
+            startupRampGain = (startupRampSamplesRemaining > 0) ? endGain : 1.0f;
+        }
+
         struct ActiveNote
         {
             double startBeat = 0.0;
@@ -2404,6 +2481,8 @@ namespace sampledex
         float prevLeftGain = 0.8f;
         float prevRightGain = 0.8f;
         float prevVolumeGain = 0.8f;
+        int startupRampSamplesRemaining = 0;
+        float startupRampGain = 0.0f;
         std::array<float, 2> monitorDcPrevInput { 0.0f, 0.0f };
         std::array<float, 2> monitorDcPrevOutput { 0.0f, 0.0f };
         double preparedSampleRate = 44100.0;
@@ -2427,6 +2506,10 @@ namespace sampledex
         std::atomic<float> builtInDelayMix { 0.22f };
         std::atomic<float> builtInSaturationDrive { 2.0f };
         std::atomic<float> builtInSaturationMix { 0.35f };
+        float builtInSaturationSmoothedDrive = 2.0f;
+        float builtInSaturationSmoothedMix = 0.35f;
+        std::array<float, 2> builtInSaturationDcPrevInput { 0.0f, 0.0f };
+        std::array<float, 2> builtInSaturationDcPrevOutput { 0.0f, 0.0f };
         std::atomic<float> builtInGateThresholdDb { -52.0f };
         std::atomic<float> builtInGateAttackMs { 4.0f };
         std::atomic<float> builtInGateReleaseMs { 75.0f };
