@@ -7268,8 +7268,10 @@ namespace sampledex
         constexpr float softClipDrive = 1.34f;
         const float softClipNormaliser = std::tanh(softClipDrive);
         constexpr float limiterCeiling = 0.972f;
-        constexpr float limiterAttack = 0.45f;
-        constexpr float limiterRelease = 0.0015f;
+        const double sampleRate = juce::jmax(1.0, sampleRateRt.load(std::memory_order_relaxed));
+        const float limiterAttack = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.0015)));
+        const float limiterRelease = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.045)));
+        const float limiterRecovery = static_cast<float>(1.0 - std::exp(-1.0 / (sampleRate * 0.030)));
         const float dezipperCoeff = masterGainDezipperCoeff > 0.0f
             ? masterGainDezipperCoeff
             : 0.0015f;
@@ -7308,7 +7310,7 @@ namespace sampledex
             }
             else
             {
-                masterLimiterGainState += (1.0f - masterLimiterGainState) * 0.01f;
+                masterLimiterGainState += (1.0f - masterLimiterGainState) * limiterRecovery;
             }
 
             for (int ch = 0; ch < outputChannels; ++ch)
