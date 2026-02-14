@@ -8,6 +8,7 @@
 #include "Mixer.h"
 #include "TimelineModel.h"
 #include "TransportEngine.h"
+#include "SmfPipeline.h"
 #include "TimelineComponent.h"
 #include "PianoRollComponent.h"
 #include "StepSequencerComponent.h"
@@ -240,7 +241,7 @@ namespace sampledex
         bool isSupportedAudioFile(const juce::File& file) const;
         bool isSupportedMidiFile(const juce::File& file) const;
         void collectDroppedFilesRecursively(const juce::File& candidate, juce::Array<juce::File>& output) const;
-        bool importMidiFileToClip(const juce::File& file, int targetTrack, double startBeat, int& outClipIndex, double& outTempoBpm);
+        bool importMidiFileToClip(const juce::File& file, int targetTrack, double startBeat, int& outClipIndex, double& outTempoBpm, SmfPipeline::ImportMode mode = SmfPipeline::ImportMode::SingleMergedClip);
         bool importAudioFileToClip(const juce::File& file, int targetTrack, double startBeat, int& outClipIndex, double& outDetectedTempoBpm);
         double tryExtractTempoFromFilename(const juce::String& fileName) const;
         int resolveMidiImportTargetTrack(int preferredTrackIndex, bool createTrackIfNeeded);
@@ -624,6 +625,7 @@ namespace sampledex
         int projectScaleMode = 0;
         int projectTransposeSemitones = 0;
         std::vector<TempoEvent> tempoEvents;
+        std::vector<SmfPipeline::TimeSignaturePoint> timeSignatureEvents;
         mutable juce::CriticalSection midiDeviceSelectionLock;
         mutable juce::CriticalSection midiLearnLock;
         std::vector<MidiLearnMapping> midiLearnMappings;
