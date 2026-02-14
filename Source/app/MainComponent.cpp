@@ -6798,72 +6798,105 @@ namespace sampledex
                     const int clipOutputChannels = clipTrackBuffer.getNumChannels();
                     if (clipOutputChannels <= 0 || clipTrackBuffer.getNumSamples() < bufferToFill.numSamples)
                         continue;
-                    for (int sampleIdx = 0; sampleIdx < targetNumSamples; ++sampleIdx)
+                    const int sourceBufferNumSamples = hasDiskStream ? readWindowLength : clipNumSamples;
+                    const double sourceBaseOffset = hasDiskStream ? static_cast<double>(readWindowStart) : 0.0;
+
+                    if (clipNumChannels == 1)
                     {
-                        if (sourcePosition >= static_cast<double>(clipNumSamples - 1))
-                            break;
-                        float fadeGain = 1.0f;
-                        if (fadeInBeats > 0.0)
+                        const auto* src = hasDiskStream ? audioStreamScratch.getReadPointer(0)
+                                                        : clip.audioData->getReadPointer(0);
+                        auto* dstL = clipOutputChannels > 0 ? clipTrackBuffer.getWritePointer(0) : nullptr;
+                        auto* dstR = clipOutputChannels > 1 ? clipTrackBuffer.getWritePointer(1) : nullptr;
+
+                        for (int sampleIdx = 0; sampleIdx < targetNumSamples; ++sampleIdx)
                         {
-                            const float fadeInLinear = static_cast<float>(juce::jlimit(0.0,
-                                                                                       1.0,
-                                                                                       beatInClip / fadeInBeats));
-                            fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeInLinear));
-                        }
-                        if (fadeOutBeats > 0.0)
-                        {
-                            const double beatsToEnd = juce::jmax(0.0, clip.lengthBeats - beatInClip);
-                            const float fadeOutLinear = static_cast<float>(juce::jlimit(0.0,
-                                                                                         1.0,
-                                                                                         beatsToEnd / fadeOutBeats));
-                            fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeOutLinear));
-                        }
-                        const float sampleGain = baseGain * fadeGain;
-                        const double beatsPerSample = beatStep;
-                        const int writeIndex = targetStartSample + sampleIdx;
-                        if (clipNumChannels == 1)
-                        {
-                            const auto* src = hasDiskStream ? audioStreamScratch.getReadPointer(0)
-                                                            : clip.audioData->getReadPointer(0);
-                            const double localSourcePosition = hasDiskStream
-                                ? sourcePosition - static_cast<double>(readWindowStart)
-                                : sourcePosition;
+                            if (sourcePosition >= static_cast<double>(clipNumSamples - 1))
+                                break;
+
+                            float fadeGain = 1.0f;
+                            if (fadeInBeats > 0.0)
+                            {
+                                const float fadeInLinear = static_cast<float>(juce::jlimit(0.0,
+                                                                                           1.0,
+                                                                                           beatInClip / fadeInBeats));
+                                fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeInLinear));
+                            }
+                            if (fadeOutBeats > 0.0)
+                            {
+                                const double beatsToEnd = juce::jmax(0.0, clip.lengthBeats - beatInClip);
+                                const float fadeOutLinear = static_cast<float>(juce::jlimit(0.0,
+                                                                                             1.0,
+                                                                                             beatsToEnd / fadeOutBeats));
+                                fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeOutLinear));
+                            }
+
+                            const int writeIndex = targetStartSample + sampleIdx;
                             float interpolated = sampleBandlimited(src,
-                                                                    hasDiskStream ? readWindowLength : clipNumSamples,
-                                                                    localSourcePosition);
-                            interpolated = applyMicroFadeWindow(beatInClip, clip.lengthBeats, beatsPerSample, interpolated);
-                            if (clipOutputChannels > 0)
-                            {
-                                auto* dstL = clipTrackBuffer.getWritePointer(0);
-                                dstL[writeIndex] += interpolated * sampleGain;
-                            }
-                            if (clipOutputChannels > 1)
-                            {
-                                auto* dstR = clipTrackBuffer.getWritePointer(1);
-                                dstR[writeIndex] += interpolated * sampleGain;
-                            }
+                                                                    sourceBufferNumSamples,
+                                                                    sourcePosition - sourceBaseOffset);
+                            interpolated = applyMicroFadeWindow(beatInClip, clip.lengthBeats, beatStep, interpolated);
+                            const float scaled = interpolated * (baseGain * fadeGain);
+                            if (dstL != nullptr)
+                                dstL[writeIndex] += scaled;
+                            if (dstR != nullptr)
+                                dstR[writeIndex] += scaled;
+
+                            sourcePosition += sourceIncrement;
+                            beatInClip += beatStep;
                         }
-                        else
+                    }
+                    else
+                    {
+                        const int mixChannels = juce::jmin(clipNumChannels, clipOutputChannels);
+                        if (mixChannels <= 0)
+                            continue;
+
+                        std::array<const float*, 2> srcPointers {};
+                        std::array<float*, 2> dstPointers {};
+                        for (int ch = 0; ch < mixChannels; ++ch)
                         {
-                            const int mixChannels = juce::jmin(clipNumChannels, clipOutputChannels);
-                            for (int ch = 0; ch < mixChannels; ++ch)
-                            {
-                                const auto* src = hasDiskStream ? audioStreamScratch.getReadPointer(ch)
-                                                                : clip.audioData->getReadPointer(ch);
-                                auto* dst = clipTrackBuffer.getWritePointer(ch);
-                                const double localSourcePosition = hasDiskStream
-                                    ? sourcePosition - static_cast<double>(readWindowStart)
-                                    : sourcePosition;
-                                float interpolated = sampleBandlimited(src,
-                                                                        hasDiskStream ? readWindowLength : clipNumSamples,
-                                                                        localSourcePosition);
-                                interpolated = applyMicroFadeWindow(beatInClip, clip.lengthBeats, beatsPerSample, interpolated);
-                                dst[writeIndex] += interpolated * sampleGain;
-                            }
+                            srcPointers[static_cast<size_t>(ch)] = hasDiskStream ? audioStreamScratch.getReadPointer(ch)
+                                                                                  : clip.audioData->getReadPointer(ch);
+                            dstPointers[static_cast<size_t>(ch)] = clipTrackBuffer.getWritePointer(ch);
                         }
 
-                        sourcePosition += sourceIncrement;
-                        beatInClip += beatStep;
+                        for (int sampleIdx = 0; sampleIdx < targetNumSamples; ++sampleIdx)
+                        {
+                            if (sourcePosition >= static_cast<double>(clipNumSamples - 1))
+                                break;
+
+                            float fadeGain = 1.0f;
+                            if (fadeInBeats > 0.0)
+                            {
+                                const float fadeInLinear = static_cast<float>(juce::jlimit(0.0,
+                                                                                           1.0,
+                                                                                           beatInClip / fadeInBeats));
+                                fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeInLinear));
+                            }
+                            if (fadeOutBeats > 0.0)
+                            {
+                                const double beatsToEnd = juce::jmax(0.0, clip.lengthBeats - beatInClip);
+                                const float fadeOutLinear = static_cast<float>(juce::jlimit(0.0,
+                                                                                             1.0,
+                                                                                             beatsToEnd / fadeOutBeats));
+                                fadeGain = juce::jmin(fadeGain, applyEqualPowerFade(fadeOutLinear));
+                            }
+
+                            const int writeIndex = targetStartSample + sampleIdx;
+                            const double localSourcePosition = sourcePosition - sourceBaseOffset;
+                            const float sampleGain = baseGain * fadeGain;
+                            for (int ch = 0; ch < mixChannels; ++ch)
+                            {
+                                float interpolated = sampleBandlimited(srcPointers[static_cast<size_t>(ch)],
+                                                                        sourceBufferNumSamples,
+                                                                        localSourcePosition);
+                                interpolated = applyMicroFadeWindow(beatInClip, clip.lengthBeats, beatStep, interpolated);
+                                dstPointers[static_cast<size_t>(ch)][writeIndex] += interpolated * sampleGain;
+                            }
+
+                            sourcePosition += sourceIncrement;
+                            beatInClip += beatStep;
+                        }
                     }
                 }
             }
