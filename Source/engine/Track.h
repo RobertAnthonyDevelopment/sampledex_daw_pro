@@ -1570,7 +1570,10 @@ namespace sampledex
                 if (instrumentSlot.instance != nullptr && !instrumentSlot.bypassed)
                 {
                     if (getUsableMainOutputChannels(*instrumentSlot.instance) > 0)
-                        instrumentSlot.instance->processBlock(pluginProcessBuffer, instrumentMidi);
+                        processPluginWithChunkedMidi(*instrumentSlot.instance,
+                                                     pluginProcessBuffer,
+                                                     instrumentMidi,
+                                                     requiredSamples);
                     else
                         instrumentSlot.bypassed = true;
                 }
@@ -1600,7 +1603,10 @@ namespace sampledex
                         slot.bypassed = true;
                         continue;
                     }
-                    slot.instance->processBlock(pluginProcessBuffer, insertMidi);
+                    processPluginWithChunkedMidi(*slot.instance,
+                                                 pluginProcessBuffer,
+                                                 insertMidi,
+                                                 requiredSamples);
                 }
 
                 // 2b. Built-in DSP essentials (toggleable track-local effects).
@@ -2032,6 +2038,7 @@ namespace sampledex
             builtInSaturationSmoothedMix = targetMixForReset();
             builtInSaturationDcPrevInput = { 0.0f, 0.0f };
             builtInSaturationDcPrevOutput = { 0.0f, 0.0f };
+            builtInSaturationOversamplePrevInput = { 0.0f, 0.0f };
         }
 
         float targetDriveForReset() const
@@ -2120,6 +2127,7 @@ namespace sampledex
 
                 float prevInput = builtInSaturationDcPrevInput[static_cast<size_t>(ch)];
                 float prevOutput = builtInSaturationDcPrevOutput[static_cast<size_t>(ch)];
+                float prevOversampleInput = builtInSaturationOversamplePrevInput[static_cast<size_t>(ch)];
                 float channelDrive = smoothedDrive;
                 float channelMix = smoothedMix;
 
@@ -2135,7 +2143,11 @@ namespace sampledex
 
                     const float safeDrive = juce::jmax(1.0e-4f, channelDrive);
                     const float normalise = 1.0f / std::tanh(safeDrive);
-                    const float wet = std::tanh(dcRemoved * safeDrive) * normalise;
+                    const float midpoint = 0.5f * (prevOversampleInput + dcRemoved);
+                    const float clippedMid = std::tanh(midpoint * safeDrive) * normalise;
+                    const float clippedNow = std::tanh(dcRemoved * safeDrive) * normalise;
+                    prevOversampleInput = dcRemoved;
+                    const float wet = 0.5f * (clippedMid + clippedNow);
                     const float mixAmount = juce::jlimit(0.0f, 1.0f, channelMix);
                     const float dryMix = std::cos(mixAmount * juce::MathConstants<float>::halfPi);
                     const float wetMix = std::sin(mixAmount * juce::MathConstants<float>::halfPi);
@@ -2144,6 +2156,7 @@ namespace sampledex
 
                 builtInSaturationDcPrevInput[static_cast<size_t>(ch)] = prevInput;
                 builtInSaturationDcPrevOutput[static_cast<size_t>(ch)] = prevOutput;
+                builtInSaturationOversamplePrevInput[static_cast<size_t>(ch)] = prevOversampleInput;
             }
 
             builtInSaturationSmoothedDrive = targetDrive;
@@ -2324,6 +2337,33 @@ namespace sampledex
             }
             if ((fxMask & getBuiltInEffectBit(BuiltInEffect::Limiter)) != 0u)
                 builtInLimiter.process(context);
+        }
+
+        static void processPluginWithChunkedMidi(juce::AudioProcessor& processor,
+                                                 juce::AudioBuffer<float>& buffer,
+                                                 const juce::MidiBuffer& midi,
+                                                 int samples)
+        {
+            const int channels = buffer.getNumChannels();
+            if (channels <= 0 || samples <= 0)
+                return;
+
+            constexpr int maxChunkSize = 64;
+            juce::MidiBuffer chunkMidi;
+            std::vector<float*> channelPointers(static_cast<size_t>(channels), nullptr);
+
+            for (int chunkStart = 0; chunkStart < samples; chunkStart += maxChunkSize)
+            {
+                const int chunkSize = juce::jmin(maxChunkSize, samples - chunkStart);
+                chunkMidi.clear();
+                chunkMidi.addEvents(midi, chunkStart, chunkSize, -chunkStart);
+
+                for (int ch = 0; ch < channels; ++ch)
+                    channelPointers[static_cast<size_t>(ch)] = buffer.getWritePointer(ch, chunkStart);
+
+                juce::AudioBuffer<float> chunkBuffer(channelPointers.data(), channels, chunkSize);
+                processor.processBlock(chunkBuffer, chunkMidi);
+            }
         }
 
         int getRequiredPluginChannelsLocked(int minimumChannels) const
@@ -2628,6 +2668,7 @@ namespace sampledex
         float builtInSaturationSmoothedMix = 0.35f;
         std::array<float, 2> builtInSaturationDcPrevInput { 0.0f, 0.0f };
         std::array<float, 2> builtInSaturationDcPrevOutput { 0.0f, 0.0f };
+        std::array<float, 2> builtInSaturationOversamplePrevInput { 0.0f, 0.0f };
         std::atomic<float> builtInGateThresholdDb { -52.0f };
         std::atomic<float> builtInGateAttackMs { 4.0f };
         std::atomic<float> builtInGateReleaseMs { 75.0f };
