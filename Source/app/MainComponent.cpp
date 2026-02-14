@@ -5253,10 +5253,14 @@ namespace sampledex
             juce::MenuBarModel::setMacMainMenu(nullptr);
         #endif
         stopTimer();
-        backgroundRenderPool.removeAllJobs(true, 600000);
+        outputSafetyMuteBlocksRt.store(256, std::memory_order_relaxed);
+        transport.stop();
+        panicAllNotes();
+        renderCancelRequestedRt.store(true, std::memory_order_relaxed);
+        deviceManager.removeAudioCallback(this);
+        backgroundRenderPool.removeAllJobs(true, 15000);
         backgroundRenderBusyRt.store(false, std::memory_order_relaxed);
         realtimeGraphScheduler.setWorkerCount(0);
-        deviceManager.removeAudioCallback(this);
         for (const auto& info : juce::MidiInput::getAvailableDevices())
         {
             if (deviceManager.isMidiInputDeviceEnabled(info.identifier))
@@ -11893,6 +11897,11 @@ namespace sampledex
 
     void MainComponent::requestApplicationClose()
     {
+        outputSafetyMuteBlocksRt.store(256, std::memory_order_relaxed);
+        transport.stop();
+        panicAllNotes();
+        renderCancelRequestedRt.store(true, std::memory_order_relaxed);
+
         if (closeRequestInProgress.exchange(true, std::memory_order_acq_rel))
         {
             logCloseDecision("ignored-duplicate-request");
