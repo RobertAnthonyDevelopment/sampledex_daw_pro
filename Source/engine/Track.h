@@ -1970,6 +1970,9 @@ namespace sampledex
             builtInDelayBuffer.clear();
             builtInDelayWritePosition = 0;
             builtInDelayLastSampleRate = safeSampleRate;
+            builtInDelayFeedbackLowpassState = { 0.0f, 0.0f };
+            builtInDelayFeedbackDcBlockPrevInput = { 0.0f, 0.0f };
+            builtInDelayFeedbackDcBlockPrevOutput = { 0.0f, 0.0f };
             builtInGateEnvelope = 0.0f;
             builtInSaturationSmoothedDrive = targetDriveForReset();
             builtInSaturationSmoothedMix = targetMixForReset();
@@ -2083,40 +2086,75 @@ namespace sampledex
 
             const double sr = juce::jmax(8000.0, builtInDelayLastSampleRate);
             const float delayMs = juce::jlimit(5.0f, 1800.0f, builtInDelayTimeMs.load(std::memory_order_relaxed));
-            const int delaySamples = juce::jlimit(1,
-                                                  builtInDelayBuffer.getNumSamples() - 1,
-                                                  static_cast<int>(std::round((delayMs * 0.001f) * sr)));
+            const float delaySamples = juce::jlimit(1.0f,
+                                                    static_cast<float>(builtInDelayBuffer.getNumSamples() - 2),
+                                                    delayMs * 0.001f * static_cast<float>(sr));
             const float feedback = juce::jlimit(0.0f, 0.95f, builtInDelayFeedback.load(std::memory_order_relaxed));
             const float mix = juce::jlimit(0.0f, 1.0f, builtInDelayMix.load(std::memory_order_relaxed));
             if (mix <= 0.0001f)
                 return;
 
+            const float dryGain = 1.0f - mix;
+            const float wetGain = mix;
+
+            const float lowpassCutoffHz = 9000.0f;
+            const float lowpassAlpha = 1.0f - std::exp(-juce::MathConstants<float>::twoPi
+                                                       * (lowpassCutoffHz / static_cast<float>(sr)));
+            constexpr float dcBlockCoeff = 0.995f;
+
             int writePos = juce::jlimit(0,
                                         builtInDelayBuffer.getNumSamples() - 1,
                                         builtInDelayWritePosition);
-            int readPos = writePos - delaySamples;
-            while (readPos < 0)
-                readPos += builtInDelayBuffer.getNumSamples();
+
+            std::array<float*, 2> writePtrs { nullptr, nullptr };
+            std::array<float*, 2> delayPtrs { nullptr, nullptr };
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                writePtrs[static_cast<size_t>(ch)] = buffer.getWritePointer(ch);
+                delayPtrs[static_cast<size_t>(ch)] = builtInDelayBuffer.getWritePointer(ch);
+            }
 
             for (int i = 0; i < samples; ++i)
             {
+                float readIndex = static_cast<float>(writePos) - delaySamples;
+                while (readIndex < 0.0f)
+                    readIndex += static_cast<float>(builtInDelayBuffer.getNumSamples());
+
+                const int readPosA = static_cast<int>(readIndex);
+                const int readPosB = (readPosA + 1) % builtInDelayBuffer.getNumSamples();
+                const float readFrac = readIndex - static_cast<float>(readPosA);
+
                 for (int ch = 0; ch < channels; ++ch)
                 {
-                    auto* write = buffer.getWritePointer(ch);
-                    auto* delayWrite = builtInDelayBuffer.getWritePointer(ch);
+                    auto* write = writePtrs[static_cast<size_t>(ch)];
+                    auto* delayWrite = delayPtrs[static_cast<size_t>(ch)];
                     if (write == nullptr || delayWrite == nullptr)
                         continue;
 
                     const float dry = write[i];
-                    const float delayed = delayWrite[readPos];
-                    write[i] = dry + (delayed * mix);
-                    delayWrite[writePos] = juce::jlimit(-1.5f, 1.5f, dry + (delayed * feedback));
+                    const float delayedA = delayWrite[readPosA];
+                    const float delayedB = delayWrite[readPosB];
+                    const float delayed = delayedA + ((delayedB - delayedA) * readFrac);
+                    write[i] = (dry * dryGain) + (delayed * wetGain);
+
+                    const auto channelIndex = static_cast<size_t>(ch);
+                    float feedbackSample = dry + (delayed * feedback);
+
+                    auto& lowpassState = builtInDelayFeedbackLowpassState[channelIndex];
+                    lowpassState += lowpassAlpha * (feedbackSample - lowpassState);
+                    feedbackSample = lowpassState;
+
+                    auto& prevIn = builtInDelayFeedbackDcBlockPrevInput[channelIndex];
+                    auto& prevOut = builtInDelayFeedbackDcBlockPrevOutput[channelIndex];
+                    const float dcBlocked = feedbackSample - prevIn + (dcBlockCoeff * prevOut);
+                    prevIn = feedbackSample;
+                    prevOut = dcBlocked;
+
+                    delayWrite[writePos] = juce::jlimit(-1.25f, 1.25f, dcBlocked);
                 }
 
                 if (++writePos >= builtInDelayBuffer.getNumSamples())
                     writePos = 0;
-                if (++readPos >= builtInDelayBuffer.getNumSamples())
-                    readPos = 0;
             }
 
             builtInDelayWritePosition = writePos;
@@ -2484,6 +2522,9 @@ namespace sampledex
         juce::AudioBuffer<float> builtInDelayBuffer;
         int builtInDelayWritePosition = 0;
         double builtInDelayLastSampleRate = 44100.0;
+        std::array<float, 2> builtInDelayFeedbackLowpassState { 0.0f, 0.0f };
+        std::array<float, 2> builtInDelayFeedbackDcBlockPrevInput { 0.0f, 0.0f };
+        std::array<float, 2> builtInDelayFeedbackDcBlockPrevOutput { 0.0f, 0.0f };
         float builtInGateEnvelope = 0.0f;
 
         std::atomic<bool> frozenPlaybackOnly { false };
