@@ -1393,8 +1393,9 @@ namespace sampledex
             horizontalScrollBar.setVisible(contentWidth > 120);
             verticalScrollBar.setVisible(contentHeight > rulerHeight + 40);
 
-            const float viewportWidth = juce::jmax(1.0f, static_cast<float>(contentWidth - headerWidth));
-            const float visibleBeats = viewportWidth / juce::jmax(1.0f, pixelsPerBeat);
+            const double viewportWidth = juce::jmax(1.0, static_cast<double>(contentWidth - headerWidth));
+            const double pixelsPerBeatForScroll = juce::jmax(1.0, static_cast<double>(pixelsPerBeat));
+            const double visibleBeats = viewportWidth / pixelsPerBeatForScroll;
             double mediaEndBeat = 0.0;
             for (const auto& clip : clips)
                 mediaEndBeat = juce::jmax(mediaEndBeat, clip.startBeat + juce::jmax(0.25, clip.lengthBeats));
@@ -1404,7 +1405,8 @@ namespace sampledex
                                                         juce::jmax(playheadBeat + visibleBeats,
                                                                    juce::jmax(loopEndBeat, mediaEndBeat + 16.0)));
             horizontalScrollBar.setRangeLimits(0.0, juce::jmax(contentBeatExtent, visibleBeats));
-            horizontalScrollBar.setCurrentRange(scrollX / juce::jmax(1.0f, pixelsPerBeat), visibleBeats);
+            horizontalScrollBar.setCurrentRange(static_cast<double>(scrollX) / pixelsPerBeatForScroll,
+                                                visibleBeats);
 
             const float viewportTracks = getTrackViewportHeight() / juce::jmax(1.0f, trackHeight);
             const float contentTracks = juce::jmax(viewportTracks, static_cast<float>(tracks.size()));
@@ -1986,12 +1988,21 @@ namespace sampledex
             const int clipIndex = findClipIndexAtPosition(clickPosition);
             if (clipIndex >= 0)
             {
-                menu.addItem(3, "Delete Clip");
-                menu.addItem(5, "Split Clip At Cursor");
-                menu.addItem(6, "Duplicate Clip");
+                menu.addItem(3, "Delete Clip (Del)");
+                menu.addItem(5, "Split Clip At Cursor (S at playhead)");
+                menu.addItem(6, "Duplicate Clip (Cmd/Ctrl+D)");
                 menu.addItem(7, "Nudge Clip Left");
                 menu.addItem(8, "Nudge Clip Right");
             }
+
+            menu.addSeparator();
+            menu.addSectionHeader("Shortcut Map");
+            menu.addItem(901, "Space: Play/Stop", false, false);
+            menu.addItem(902, "R: Record", false, false);
+            menu.addItem(903, "Cmd/Ctrl+Z: Undo", false, false);
+            menu.addItem(904, "Cmd/Ctrl+D: Duplicate Clip", false, false);
+            menu.addItem(905, "S: Split at Playhead", false, false);
+            menu.addItem(906, "Del: Delete Clip", false, false);
 
             menu.showMenuAsync(
                 juce::PopupMenu::Options().withTargetComponent(this),
