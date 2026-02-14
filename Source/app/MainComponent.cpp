@@ -6027,16 +6027,16 @@ namespace sampledex
             if (shouldRun != externalMidiClockWasRunning)
             {
                 if (shouldRun)
-                    transport.play();
+                    transport.playRt();
                 else
-                    transport.stop();
+                    transport.stopRt();
                 externalMidiClockWasRunning = shouldRun;
             }
 
             if (generation != lastAppliedExternalClockGeneration)
             {
                 const double externalBeat = juce::jmax(0.0, externalMidiClockBeatRt.load(std::memory_order_relaxed));
-                transport.setPositionBeats(externalBeat);
+                transport.setPositionBeatsRt(externalBeat);
                 lastAppliedExternalClockGeneration = generation;
             }
         }
