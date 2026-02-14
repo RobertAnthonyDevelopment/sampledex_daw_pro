@@ -26,7 +26,7 @@ namespace sampledex
         // On platforms that don't support it, this becomes a no-op and returns false.
         bool setVirtualOutputEnabled (bool enabled, const juce::String& deviceName);
 
-        bool isVirtualOutputEnabled() const { return virtualEnabled; }
+        bool isVirtualOutputEnabled() const;
 
         // Sends immediately on the currently active output (virtual takes precedence if enabled).
         void sendNow (const juce::MidiMessage& msg);
@@ -42,6 +42,8 @@ namespace sampledex
         std::unique_ptr<juce::MidiInput>  input;
         std::unique_ptr<juce::MidiOutput> output;
         std::unique_ptr<juce::MidiOutput> virtualOutput;
+
+        mutable juce::CriticalSection outputStateLock;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiDeviceRouter)
     };
