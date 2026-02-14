@@ -6754,6 +6754,7 @@ namespace sampledex
         const bool startupGuardActive = startupSafetyBlocksRemainingRt.load(std::memory_order_relaxed) > 0;
         const bool lowLatencyProcessing = lowLatencyModeRt.load(std::memory_order_relaxed)
                                        || xrunRecoveryBlocksRt.load(std::memory_order_relaxed) > 0;
+        const bool offlineRenderActive = offlineRenderActiveRt.load(std::memory_order_relaxed);
         const bool monitorSafeForTrackProcessing = monitorSafeModeRt.load(std::memory_order_relaxed);
         bool monitoredTrackInputActive = false;
         std::array<RealtimeTrackGraphJob, static_cast<size_t>(maxRealtimeTracks)> trackGraphJobs {};
@@ -6805,7 +6806,8 @@ namespace sampledex
             const juce::AudioBuffer<float>* monitorInput = nullptr;
             const juce::AudioBuffer<float>* recordInput = nullptr;
             auto& trackInputBuffer = trackInputWorkBuffers[static_cast<size_t>(i)];
-            if (capturedInputChannels > 0
+            if (!offlineRenderActive
+                && capturedInputChannels > 0
                 && trackInputBuffer.getNumChannels() >= 2
                 && trackInputBuffer.getNumSamples() >= bufferToFill.numSamples
                 && liveInputCaptureBuffer.getNumSamples() >= bufferToFill.numSamples)
@@ -6906,7 +6908,11 @@ namespace sampledex
             }
         }
 
-        const bool useParallelGraph = realtimeGraphScheduler.getWorkerCount() > 0 && activeTrackCount >= 4;
+        const bool useParallelGraph = !offlineRenderActive
+                                   && !lowLatencyProcessing
+                                   && bufferToFill.numSamples >= 256
+                                   && realtimeGraphScheduler.getWorkerCount() > 0
+                                   && activeTrackCount >= 4;
         if (useParallelGraph)
             realtimeGraphScheduler.run(activeTrackCount, trackGraphJobs.data(), &runRealtimeTrackGraphJob);
         else
@@ -10932,9 +10938,28 @@ namespace sampledex
 
         midiCollector.reset(exportSampleRate);
         midiScheduler.reset();
+        offlineRenderActiveRt.store(true, std::memory_order_relaxed);
         for (auto* track : tracks)
-            track->panic();
+        {
+            if (track != nullptr)
+            {
+                track->setPluginsNonRealtime(true);
+                track->panic();
+            }
+        }
         panicRequestedRt.store(true, std::memory_order_relaxed);
+
+        struct OfflineRenderScope
+        {
+            MainComponent& owner;
+            ~OfflineRenderScope()
+            {
+                owner.offlineRenderActiveRt.store(false, std::memory_order_relaxed);
+                for (auto* track : owner.tracks)
+                    if (track != nullptr)
+                        track->setPluginsNonRealtime(false);
+            }
+        } offlineRenderScope { *this };
 
         transport.stop();
         transport.setPosition(startBeat);

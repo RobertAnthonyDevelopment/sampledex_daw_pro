@@ -807,7 +807,9 @@ namespace sampledex
     };
 
     // --- Timeline ---
-    class TimelineComponent : public juce::Component, public juce::Timer
+    class TimelineComponent : public juce::Component,
+                              public juce::Timer,
+                              private juce::ScrollBar::Listener
     {
         enum class DragMode
         {
@@ -844,6 +846,14 @@ namespace sampledex
         TimelineComponent(TransportEngine& t, std::vector<Clip>& c, const juce::OwnedArray<Track>& trks) 
             : transport(t), clips(c), tracks(trks)
         {
+            horizontalScrollBar.addListener(this);
+            verticalScrollBar.addListener(this);
+            horizontalScrollBar.setAutoHide(false);
+            verticalScrollBar.setAutoHide(false);
+            horizontalScrollBar.setSingleStepSize(32.0);
+            verticalScrollBar.setSingleStepSize(24.0);
+            addAndMakeVisible(horizontalScrollBar);
+            addAndMakeVisible(verticalScrollBar);
             startTimerHz(30);
         }
 
@@ -1110,7 +1120,13 @@ namespace sampledex
 
         void paint(juce::Graphics& g) override
         {
-            auto rightSide = getLocalBounds();
+            const auto fullBounds = getLocalBounds();
+            auto contentBounds = fullBounds;
+            const int scrollBarThickness = 12;
+            contentBounds.removeFromBottom(scrollBarThickness);
+            contentBounds.removeFromRight(scrollBarThickness);
+
+            auto rightSide = contentBounds;
             rightSide.removeFromLeft(headerWidth);
 
             g.fillAll(theme::Colours::background());
@@ -1365,8 +1381,36 @@ namespace sampledex
         {
             if (!userSizedHeaderWidth)
                 headerWidth = juce::jlimit(240, 520, juce::jmax(240, getWidth() / 4));
-            headerWidth = juce::jlimit(230, juce::jmax(230, getWidth() - 300), headerWidth);
+
+            const int scrollBarThickness = 12;
+            const int contentWidth = juce::jmax(1, getWidth() - scrollBarThickness);
+            const int contentHeight = juce::jmax(1, getHeight() - scrollBarThickness);
+            headerWidth = juce::jlimit(230, juce::jmax(230, contentWidth - 300), headerWidth);
             clampScrollOffsets();
+
+            horizontalScrollBar.setBounds(0, contentHeight, contentWidth, scrollBarThickness);
+            verticalScrollBar.setBounds(contentWidth, rulerHeight, scrollBarThickness, juce::jmax(0, contentHeight - rulerHeight));
+            horizontalScrollBar.setVisible(contentWidth > 120);
+            verticalScrollBar.setVisible(contentHeight > rulerHeight + 40);
+
+            const float viewportWidth = juce::jmax(1.0f, static_cast<float>(contentWidth - headerWidth));
+            const float visibleBeats = viewportWidth / juce::jmax(1.0f, pixelsPerBeat);
+            double mediaEndBeat = 0.0;
+            for (const auto& clip : clips)
+                mediaEndBeat = juce::jmax(mediaEndBeat, clip.startBeat + juce::jmax(0.25, clip.lengthBeats));
+            const double playheadBeat = juce::jmax(0.0, transport.getCurrentBeat());
+            const double loopEndBeat = transport.getLoopEndBeat();
+            const double contentBeatExtent = juce::jmax(visibleBeats,
+                                                        juce::jmax(playheadBeat + visibleBeats,
+                                                                   juce::jmax(loopEndBeat, mediaEndBeat + 16.0)));
+            horizontalScrollBar.setRangeLimits(0.0, juce::jmax(contentBeatExtent, visibleBeats));
+            horizontalScrollBar.setCurrentRange(scrollX / juce::jmax(1.0f, pixelsPerBeat), visibleBeats);
+
+            const float viewportTracks = getTrackViewportHeight() / juce::jmax(1.0f, trackHeight);
+            const float contentTracks = juce::jmax(viewportTracks, static_cast<float>(tracks.size()));
+            verticalScrollBar.setRangeLimits(0.0, contentTracks);
+            verticalScrollBar.setCurrentRange(scrollY / juce::jmax(1.0f, trackHeight), viewportTracks);
+
             const float firstTrackY = getTrackAreaTop() - scrollY;
             const int h = static_cast<int>(trackHeight);
             for (int i = 0; i < headers.size(); ++i)
@@ -1464,6 +1508,12 @@ namespace sampledex
             laneReorderSourceTrack = laneReorderPending ? trackIndex : -1;
             laneGestureStart = e.position;
 
+            timelinePanPending = true;
+            timelinePanActive = false;
+            timelinePanStartPos = e.position;
+            timelinePanStartScrollX = scrollX;
+            timelinePanStartScrollY = scrollY;
+
             // Playhead move on down for immediate feedback.
             const double beat = juce::jmax(0.0, clickedBeatRaw);
             transport.setPosition(beat);
@@ -1497,6 +1547,26 @@ namespace sampledex
                     laneReorderActive = true;
                     repaint();
                 }
+            }
+
+            if (timelinePanPending && !laneReorderActive)
+            {
+                const float dx = e.position.x - timelinePanStartPos.x;
+                const float dy = e.position.y - timelinePanStartPos.y;
+                if (!timelinePanActive)
+                {
+                    if (std::abs(dx) < 3.0f && std::abs(dy) < 3.0f)
+                        return;
+                    timelinePanActive = true;
+                    scrubPlayheadDrag = false;
+                }
+
+                scrollX = juce::jmax(0.0f, timelinePanStartScrollX - dx);
+                scrollY = juce::jmax(0.0f, timelinePanStartScrollY - dy);
+                clampScrollOffsets();
+                resized();
+                repaint();
+                return;
             }
 
             if (laneReorderActive && trackReorderDragging)
@@ -1632,6 +1702,8 @@ namespace sampledex
 
             scrubPlayheadDrag = false;
             laneReorderPending = false;
+            timelinePanPending = false;
+            timelinePanActive = false;
 
             if (laneReorderActive && trackReorderDragging)
             {
@@ -1681,6 +1753,20 @@ namespace sampledex
             dragDuplicate = false;
             draggedClipIndex = -1;
             dragMode = DragMode::none;
+            repaint();
+        }
+
+        void scrollBarMoved(juce::ScrollBar* bar, double newRangeStart) override
+        {
+            if (bar == &horizontalScrollBar)
+                scrollX = static_cast<float>(juce::jmax(0.0, newRangeStart) * pixelsPerBeat);
+            else if (bar == &verticalScrollBar)
+                scrollY = static_cast<float>(juce::jmax(0.0, newRangeStart) * trackHeight);
+            else
+                return;
+
+            clampScrollOffsets();
+            resized();
             repaint();
         }
 
@@ -1734,7 +1820,8 @@ namespace sampledex
 
         float getTrackViewportHeight() const
         {
-            return juce::jmax(0.0f, static_cast<float>(getHeight() - rulerHeight));
+            constexpr float scrollBarThickness = 12.0f;
+            return juce::jmax(0.0f, static_cast<float>(getHeight() - rulerHeight) - scrollBarThickness);
         }
 
         float getMaxScrollY() const
@@ -2152,6 +2239,8 @@ namespace sampledex
         bool scrubPlayheadDrag = false;
         bool laneReorderPending = false;
         bool laneReorderActive = false;
+        bool timelinePanPending = false;
+        bool timelinePanActive = false;
         bool autoFollowPlayhead = true;
         int selectedTrackIndex = 0;
         DragMode dragMode = DragMode::none;
@@ -2169,10 +2258,15 @@ namespace sampledex
         int reorderTargetTrack = -1;
         int laneReorderSourceTrack = -1;
         juce::Point<float> laneGestureStart;
+        juce::Point<float> timelinePanStartPos;
+        float timelinePanStartScrollX = 0.0f;
+        float timelinePanStartScrollY = 0.0f;
         bool userSizedHeaderWidth = false;
         bool headerResizeDragging = false;
         int headerResizeStartX = 0;
         int headerResizeStartWidth = 280;
         int headerWidth = 320;
+        juce::ScrollBar horizontalScrollBar { false };
+        juce::ScrollBar verticalScrollBar { true };
     };
 }
