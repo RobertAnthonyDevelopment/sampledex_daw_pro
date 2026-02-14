@@ -71,6 +71,12 @@ If you are evaluating this project, treat it as an active development snapshot.
 
 ---
 
+## Compile review notes
+
+A repository-wide compile-risk review was documented in `docs/compile_review.md` with executed checks and environment constraints.
+
+---
+
 ## Build (macOS)
 
 ### Prerequisites
