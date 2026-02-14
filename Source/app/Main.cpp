@@ -366,11 +366,21 @@ namespace
             };
 
             instance->enableAllBuses();
-            instance->disableNonMainBuses();
-
-            if (instrumentPlugin)
+            const auto currentLayout = instance->getBusesLayout();
+            if (instance->checkBusesLayoutSupported(currentLayout)
+                && instance->setBusesLayout(currentLayout)
+                && instance->getMainBusNumOutputChannels() > 0)
             {
-                if (!tryLayout(0, 2) && !tryLayout(0, 1))
+                // Keep the plugin's preferred default layout if possible.
+            }
+            else if (instrumentPlugin)
+            {
+                if (!tryLayout(0, 2)
+                    && !tryLayout(0, 1)
+                    && !tryLayout(1, 2)
+                    && !tryLayout(2, 2)
+                    && !tryLayout(1, 1)
+                    && !tryLayout(2, 1))
                 {
                     std::cout << "ERROR: Plugin probe could not configure instrument bus layout.\n";
                     return 2;
@@ -378,7 +388,12 @@ namespace
             }
             else
             {
-                if (!tryLayout(2, 2) && !tryLayout(1, 1) && !tryLayout(2, 1))
+                if (!tryLayout(2, 2)
+                    && !tryLayout(1, 2)
+                    && !tryLayout(1, 1)
+                    && !tryLayout(2, 1)
+                    && !tryLayout(0, 2)
+                    && !tryLayout(0, 1))
                 {
                     std::cout << "ERROR: Plugin probe could not configure effect bus layout.\n";
                     return 2;
