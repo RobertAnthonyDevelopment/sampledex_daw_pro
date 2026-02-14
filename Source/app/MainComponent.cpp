@@ -3066,10 +3066,10 @@ namespace sampledex
         addAndMakeVisible(trackListView);
         addAndMakeVisible(timelineView);
         
-        playButton.setButtonText("▶ Play");
+        playButton.setButtonText("Play");
         addAndMakeVisible(playButton); playButton.onClick = [this] { togglePlayback(); };
         playButton.setTooltip("Start/stop transport. Shortcut: Space. " + buildPrimaryShortcutMapText());
-        stopButton.setButtonText("■ Stop");
+        stopButton.setButtonText("Stop");
         addAndMakeVisible(stopButton);
         stopButton.setTooltip("Stop transport and recording state.");
         stopButton.onClick = [this]
@@ -3102,7 +3102,7 @@ namespace sampledex
             refreshStatusText();
         };
         
-        recordButton.setButtonText("● Rec");
+        recordButton.setButtonText("Rec");
         addAndMakeVisible(recordButton);
         recordButton.setClickingTogglesState(true);
         recordButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::red);
@@ -3179,10 +3179,10 @@ namespace sampledex
         };
         addAndMakeVisible(followPlayheadButton);
 
-        undoButton.setButtonText("↶ Undo");
+        undoButton.setButtonText("Undo");
         addAndMakeVisible(undoButton);
         undoButton.setTooltip("Undo last edit (Cmd/Ctrl+Z). " + buildPrimaryShortcutMapText());
-        redoButton.setButtonText("↷ Redo");
+        redoButton.setButtonText("Redo");
         addAndMakeVisible(redoButton);
         redoButton.setTooltip("Redo edit (Cmd+Shift+Z).");
         undoButton.onClick = [this] { undoManager.undo(); rebuildRealtimeSnapshot(); };
